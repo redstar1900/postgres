@@ -70,17 +70,20 @@ sub build_record_header
 
 	# This needs to follow the structure XLogRecord:
 	# I for xl_tot_len
-	# I for xl_xid
-	# II for xl_prev
 	# C for xl_info
 	# C for xl_rmid
 	# BB for two bytes of padding
+	# II for xl_xid
+	# II for xl_prev
 	# I for xl_crc
-	return pack("IIIICCBBI",
-		$xl_tot_len, $xl_xid,
+	return pack("ICCBBIIIII",
+		$xl_tot_len,
+		$xl_info, $xl_rmid, 0, 0,
+		$BIG_ENDIAN ? 0       : $xl_xid,
+		$BIG_ENDIAN ? $xl_xid : 0,
 		$BIG_ENDIAN ? 0        : $xl_prev,
 		$BIG_ENDIAN ? $xl_prev : 0,
-		$xl_info, $xl_rmid, 0, 0, $xl_crc);
+		$xl_crc);
 }
 
 # Build a fake WAL page header, based on the data given by the caller
@@ -147,7 +150,7 @@ $node->stop('immediate');
 my $log_size = -s $node->logfile;
 $node->start;
 ok( $node->log_contains(
-		"invalid record length at .*: expected at least 24, got 0", $log_size
+		"invalid record length at .*: expected at least 28, got 0", $log_size
 	),
 	"xl_tot_len zero");
 
@@ -159,7 +162,7 @@ $node->write_wal($TLI, $end_lsn, $WAL_SEGMENT_SIZE, build_record_header(23));
 $log_size = -s $node->logfile;
 $node->start;
 ok( $node->log_contains(
-		"invalid record length at .*: expected at least 24, got 23",
+		"invalid record length at .*: expected at least 28, got 23",
 		$log_size),
 	"xl_tot_len short");
 
@@ -172,7 +175,7 @@ $node->write_wal($TLI, $end_lsn, $WAL_SEGMENT_SIZE, build_record_header(1));
 $log_size = -s $node->logfile;
 $node->start;
 ok( $node->log_contains(
-		"invalid record length at .*: expected at least 24, got 1", $log_size
+		"invalid record length at .*: expected at least 28, got 1", $log_size
 	),
 	"xl_tot_len short at end-of-page");
 

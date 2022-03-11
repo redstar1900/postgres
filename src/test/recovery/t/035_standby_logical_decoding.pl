@@ -268,7 +268,7 @@ sub wait_until_vacuum_can_remove
 
 	# Wait until we get a newer horizon.
 	$node_primary->poll_query_until('testdb',
-		"SELECT (select pg_snapshot_xmin(pg_current_snapshot())::text::int - $xid_horizon) > 0"
+		"SELECT (select pg_snapshot_xmin(pg_current_snapshot())::text::int8 - $xid_horizon) > 0"
 	) or die "new snapshot does not have a newer horizon";
 
 	# Launch the vacuum command and insert into flush_wal (see CREATE

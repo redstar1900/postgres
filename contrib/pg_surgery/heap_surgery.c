@@ -275,10 +275,16 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 			else
 			{
 				HeapTupleHeader htup;
+				HeapTupleData tuple;
 
 				Assert(heap_force_opt == HEAP_FORCE_FREEZE);
 
 				htup = (HeapTupleHeader) PageGetItem(page, itemid);
+
+				tuple.t_data = htup;
+				tuple.t_len = ItemIdGetLength(itemid);
+				tuple.t_tableOid = RelationGetRelid(rel);
+				HeapTupleCopyXidsFromPage(buf, &tuple, page);
 
 				/*
 				 * Reset all visibility-related fields of the tuple. This
@@ -287,8 +293,9 @@ heap_force_common(FunctionCallInfo fcinfo, HeapTupleForceOption heap_force_opt)
 				 * potentially-garbled data is left behind.
 				 */
 				ItemPointerSet(&htup->t_ctid, blkno, curoff);
-				HeapTupleHeaderSetXmin(htup, FrozenTransactionId);
-				HeapTupleHeaderSetXmax(htup, InvalidTransactionId);
+				HeapTupleAndHeaderSetXmin(page, &tuple, FrozenTransactionId);
+				HeapTupleAndHeaderSetXmax(page, &tuple, InvalidTransactionId);
+
 				if (htup->t_infomask & HEAP_MOVED)
 				{
 					if (htup->t_infomask & HEAP_MOVED_OFF)

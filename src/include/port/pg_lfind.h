@@ -206,4 +206,66 @@ pg_lfind32(uint32 key, const uint32 *base, uint32 nelem)
 #endif
 }
 
+/*
+ * pg_lfind64
+ *
+ * Return true if there is an element in 'base' that equals 'key', otherwise
+ * return false.
+ */
+static inline bool
+pg_lfind64(uint64 key, uint64 *base, uint32 nelem)
+{
+	uint32		i,
+				iterations;
+#if defined(USE_ASSERT_CHECKING)
+	bool		assert_result = false;
+
+	/* pre-compute the result for assert checking */
+	for (i = 0; i < nelem; ++i)
+	{
+		if (key == base[i])
+		{
+			assert_result = true;
+			break;
+		}
+	}
+#endif
+
+#define UNROLL_FACTOR 8
+	StaticAssertStmt((UNROLL_FACTOR & (UNROLL_FACTOR - 1)) == 0,
+					 "Loop unroll factor must be power of 2");
+	iterations = nelem & ~(UNROLL_FACTOR - 1);
+	for (i = 0; i < iterations; i += UNROLL_FACTOR)
+	{
+		if (base[0] == key || base[1] == key || base[2] == key ||
+			base[3] == key || base[4] == key || base[5] == key ||
+			base[6] == key || base[7] == key)
+		{
+#if defined(USE_ASSERT_CHECKING)
+			Assert(assert_result == true);
+#endif
+			return true;
+		}
+		base += UNROLL_FACTOR;
+	}
+
+	/* Process the remaining elements one at a time. */
+	iterations = nelem & (UNROLL_FACTOR - 1);
+	for (i = 0; i < iterations; ++i)
+	{
+		if (key == *base++)
+		{
+#if defined(USE_ASSERT_CHECKING)
+			Assert(assert_result == true);
+#endif
+			return true;
+		}
+	}
+
+#if defined(USE_ASSERT_CHECKING)
+	Assert(assert_result == false);
+#endif
+	return false;
+}
+
 #endif							/* PG_LFIND_H */

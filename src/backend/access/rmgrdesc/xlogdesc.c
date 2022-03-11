@@ -75,7 +75,7 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 						 checkpoint->PrevTimeLineID,
 						 checkpoint->fullPageWrites ? "true" : "false",
 						 get_wal_level_string(checkpoint->wal_level),
-						 (unsigned long long) U64FromFullTransactionId(checkpoint->nextXid),
+						 (unsigned long long) XidFromFullTransactionId(checkpoint->nextXid),
 						 checkpoint->nextOid,
 						 (unsigned long long) checkpoint->nextMulti,
 						 (unsigned long long) checkpoint->nextMultiOffset,

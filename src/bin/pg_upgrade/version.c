@@ -9,6 +9,7 @@
 
 #include "postgres_fe.h"
 
+#include "access/transam.h"
 #include "fe_utils/string_utils.h"
 #include "pg_upgrade.h"
 
@@ -23,6 +24,19 @@ jsonb_9_4_check_applicable(ClusterInfo *cluster)
 	/* JSONB changed its storage format during 9.4 beta */
 	if (GET_MAJOR_VERSION(cluster->major_version) == 904 &&
 		cluster->controldata.cat_ver < JSONB_FORMAT_CHANGE_CAT_VER)
+		return true;
+
+	return false;
+}
+
+/*
+ * And another one for the xid type.
+ */
+bool
+xid_check_applicable(ClusterInfo *cluster)
+{
+	/* xid type changed its storage format */
+	if (cluster->controldata.cat_ver < XID_FORMATCHANGE_CAT_VER)
 		return true;
 
 	return false;
@@ -209,4 +223,171 @@ report_extension_updates(ClusterInfo *cluster)
 	}
 	else
 		check_ok();
+}
+
+/*
+ * invalidate_indexes()
+ *	Invalidates all indexes satisfying given predicate.
+ */
+static void
+invalidate_indexes(ClusterInfo *cluster, bool check_mode,
+				   const char *name, const char *pred)
+{
+	int			dbnum;
+	FILE	   *script = NULL;
+	bool		found = false;
+	char		output_path[MAXPGPATH];
+
+	snprintf(output_path, sizeof(output_path), "reindex_%s.sql", name);
+
+	prep_status("Checking for %s indexes", name);
+
+	for (dbnum = 0; dbnum < cluster->dbarr.ndbs; dbnum++)
+	{
+		PGresult   *res;
+		bool		db_used = false;
+		int			ntups;
+		int			rowno;
+		int			i_nspname,
+					i_relname;
+		DbInfo	   *active_db = &cluster->dbarr.dbs[dbnum];
+		PGconn	   *conn = connectToServer(cluster, active_db->db_name);
+
+
+		/*
+		 * Find indexes satisfying predicate.
+		 *
+		 * System indexes (with oids < FirstNormalObjectId) are excluded from
+		 * the search as they are recreated in the new cluster during initdb.
+		 */
+		res = executeQueryOrDie(
+								conn,
+								"SELECT n.nspname, c.relname, i.indexrelid "
+								"FROM	pg_catalog.pg_class c, "
+								"		pg_catalog.pg_index i, "
+								"		pg_catalog.pg_am a, "
+								"		pg_catalog.pg_namespace n "
+								"WHERE	i.indexrelid = c.oid AND "
+								"		c.relam = a.oid AND "
+								"		c.relnamespace = n.oid AND "
+								"		i.indexrelid >= '%u'::pg_catalog.oid AND "
+								"		%s "
+								"ORDER BY i.indexrelid ASC",
+								FirstNormalObjectId,
+								pred);
+
+		ntups = PQntuples(res);
+		i_nspname = PQfnumber(res, "nspname");
+		i_relname = PQfnumber(res, "relname");
+		for (rowno = 0; rowno < ntups; rowno++)
+		{
+			found = true;
+			if (!check_mode)
+			{
+				if (script == NULL && (script = fopen_priv(output_path, "w")) == NULL)
+					pg_fatal("could not open file \"%s\": %m", output_path);
+				if (!db_used)
+				{
+					PQExpBufferData connectbuf;
+
+					initPQExpBuffer(&connectbuf);
+					appendPsqlMetaConnect(&connectbuf, active_db->db_name);
+					fputs(connectbuf.data, script);
+					termPQExpBuffer(&connectbuf);
+					db_used = true;
+				}
+				fprintf(script, "REINDEX INDEX %s.%s;\n",
+						quote_identifier(PQgetvalue(res, rowno, i_nspname)),
+						quote_identifier(PQgetvalue(res, rowno, i_relname)));
+			}
+		}
+
+		PQclear(res);
+
+		if (!check_mode && db_used)
+		{
+			/*
+			 * Mark indexes satisfying predicate as invalid.
+			 *
+			 * System indexes (with oids < FirstNormalObjectId) are excluded
+			 * from the search (see above).
+			 */
+			PQclear(executeQueryOrDie(
+									  conn,
+									  "UPDATE pg_catalog.pg_index i "
+									  "SET	indisvalid = false "
+									  "FROM	pg_catalog.pg_class c, "
+									  "		pg_catalog.pg_am a, "
+									  "		pg_catalog.pg_namespace n "
+									  "WHERE	i.indexrelid = c.oid AND "
+									  "		c.relam = a.oid AND "
+									  "		c.relnamespace = n.oid AND "
+									  "		i.indexrelid >= '%u'::pg_catalog.oid AND "
+									  "		%s",
+									  FirstNormalObjectId,
+									  pred));
+		}
+
+		PQfinish(conn);
+	}
+
+	if (script)
+		fclose(script);
+
+	if (found)
+	{
+		report_status(PG_WARNING, "warning");
+		if (check_mode)
+			pg_log(PG_WARNING, "\n"
+				   "Your installation contains %s indexes.  These indexes have different\n"
+				   "internal formats between your old and new clusters, so they must be\n"
+				   "reindexed with the REINDEX command.  After upgrading, you will be given\n"
+				   "REINDEX instructions.",
+				   name);
+		else
+			pg_log(PG_WARNING, "\n"
+				   "Your installation contains %s indexes.  These indexes have different\n"
+				   "internal formats between your old and new clusters, so they must be\n"
+				   "reindexed with the REINDEX command.  The file\n"
+				   "    %s\n"
+				   "when executed by psql by the database superuser will recreate all invalid\n"
+				   "indexes; until then, none of these indexes will be used.",
+				   name,
+				   output_path);
+	}
+	else
+		check_ok();
+}
+
+/*
+ * invalidate_spgist_indexes()
+ *	32bit -> 64bit
+ *	SP-GIST contains xids.
+ */
+void
+invalidate_spgist_indexes(ClusterInfo *cluster, bool check_mode)
+{
+	invalidate_indexes(cluster, check_mode, "spgist", "a.amname = 'spgist'");
+}
+
+/*
+ * invalidate_gin_indexes()
+ *	32bit -> 64bit
+ *	Gin indexes contains xids in deleted pages.
+ */
+void
+invalidate_gin_indexes(ClusterInfo *cluster, bool check_mode)
+{
+	invalidate_indexes(cluster, check_mode, "gin", "a.amname = 'gin'");
+}
+
+/*
+ * invalidate_external_indexes()
+ *	Generate script to REINDEX non standard external indexes (like RUM etc)
+ */
+void
+invalidate_external_indexes(ClusterInfo *cluster, bool check_mode)
+{
+	invalidate_indexes(cluster, check_mode, "external",
+					   "NOT a.amname IN ('btree', 'hash', 'gist', 'gin', 'spgist', 'brin')");
 }

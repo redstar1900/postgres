@@ -1249,6 +1249,7 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 	operation.persistence = persistence;
 	operation.forknum = forkNum;
 	operation.strategy = strategy;
+
 	if (StartReadBuffer(&operation,
 						&buffer,
 						blockNum,
@@ -1937,6 +1938,9 @@ AsyncReadBuffers(ReadBuffersOperation *operation, int *nblocks_progress)
 
 		/* provide the list of buffers to the completion callbacks */
 		pgaio_io_set_handle_data_32(ioh, (uint32 *) io_buffers, io_buffers_len);
+
+		/* provide the relation */
+		pgaio_io_set_handle_pointer(ioh, operation->rel);
 
 		pgaio_io_register_callbacks(ioh,
 									persistence == RELPERSISTENCE_TEMP ?
@@ -5563,6 +5567,64 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 }
 
 /*
+ * Mark buffer as converted - ie its format is changed without logical changes.
+ *
+ * It will override `full_page_write` GUC setting in XLogRecordAssemble.
+ */
+void
+MarkBufferConverted(Buffer buffer, bool converted)
+{
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+	bool		has_mark;
+
+	if (!BufferIsValid(buffer))
+		elog(ERROR, "bad buffer ID: %d", buffer);
+
+	Assert(!BufferIsLocal(buffer));
+
+	bufHdr = GetBufferDescriptor(buffer - 1);
+
+	Assert(GetPrivateRefCount(buffer) > 0);
+	if (converted)
+	{
+		/* here, either share or exclusive lock is OK */
+		Assert(LWLockHeldByMe(BufferDescriptorGetContentLock(bufHdr)));
+	}
+
+	buf_state = pg_atomic_read_u32(&bufHdr->state);
+	has_mark = (buf_state & BM_CONVERTED) != 0;
+	if (converted == has_mark)
+		return;
+
+	buf_state = LockBufHdr(bufHdr);
+	buf_state &= ~BM_CONVERTED;
+	if (converted)
+		buf_state |= BM_CONVERTED;
+	UnlockBufHdr(bufHdr, buf_state);
+}
+
+bool
+IsBufferConverted(Buffer buffer)
+{
+
+	BufferDesc *bufHdr;
+	uint32		buf_state;
+
+	if (!BufferIsValid(buffer))
+		elog(ERROR, "bad buffer ID: %d", buffer);
+
+	Assert(!BufferIsLocal(buffer));
+
+	bufHdr = GetBufferDescriptor(buffer - 1);
+
+	Assert(GetPrivateRefCount(buffer) > 0);
+
+	buf_state = pg_atomic_read_u32(&bufHdr->state);
+	return (buf_state & BM_CONVERTED) != 0;
+}
+
+/*
  * Release buffer content locks for shared buffers.
  *
  * Used to clean up after errors.
@@ -5594,6 +5656,47 @@ UnlockBuffers(void)
 
 		PinCountWaitBuf = NULL;
 	}
+}
+
+/*
+ * Is shared buffer is locked?
+ */
+bool
+IsBufferLocked(Buffer buffer)
+{
+	BufferDesc *buf;
+
+	if (buffer == InvalidBuffer)
+		return true;
+
+	Assert(BufferIsPinned(buffer));
+	if (BufferIsLocal(buffer))
+		return true;					/* local buffers need no lock */
+
+	buf = GetBufferDescriptor(buffer - 1);
+
+	return LWLockHeldByMe(BufferDescriptorGetContentLock(buf));
+}
+
+/*
+ * Is shared buffer is locked exclusive?
+ */
+bool
+IsBufferLockedExclusive(Buffer buffer)
+{
+	BufferDesc *buf;
+
+	if (buffer == InvalidBuffer)
+		return true;
+
+	Assert(BufferIsPinned(buffer));
+	if (BufferIsLocal(buffer))
+		return true;					/* local buffers need no lock */
+
+	buf = GetBufferDescriptor(buffer - 1);
+
+	return LWLockHeldByMeInMode(BufferDescriptorGetContentLock(buf),
+								LW_EXCLUSIVE);
 }
 
 /*
@@ -7031,7 +7134,8 @@ buffer_readv_complete_one(PgAioTargetData *td, uint8 buf_off, Buffer buffer,
 						  bool *buffer_invalid,
 						  bool *failed_checksum,
 						  bool *ignored_checksum,
-						  bool *zeroed_buffer)
+						  bool *zeroed_buffer,
+						  Relation relation)
 {
 	BufferDesc *buf_hdr = is_temp ?
 		GetLocalBufferDescriptor(-buffer - 1)
@@ -7140,6 +7244,52 @@ buffer_readv_complete_one(PgAioTargetData *td, uint8 buf_off, Buffer buffer,
 		}
 	}
 
+	/*
+	 * Test 001_aio.pl specifically corrupt pages, including the page header.
+	 * But we select a page for conversion based on the inequality of versions
+	 * in the header. Therefore, the spoiled header becomes zero and does not
+	 * equal the expected current one. This leads to test failure.
+	 *
+	 * XXX: consider compare for concrete page layout version, not simple
+	 * inequality.
+	 */
+	if (PageGetPageLayoutVersion((Page) bufdata) != 0 &&
+		PageGetPageLayoutVersion((Page) bufdata) != PG_PAGE_LAYOUT_VERSION &&
+		!PageIsNew((Page) bufdata))
+	{
+		ForkNumber	forknum = tag.forkNum;
+		BlockNumber	blocknum = tag.blockNum;
+
+		Assert(is_temp == false);	/* not on a temp relation */
+
+		/*
+		 * All the forks but MAIN_FORKNUM should be converted to the
+		 * actual page layout version in pg_upgrade.
+		 */
+		if (forknum != MAIN_FORKNUM)
+		{
+			RelPathStr path = relpathbackend(td->smgr.rlocator,
+											 INVALID_PROC_NUMBER, forknum);
+
+			ereport(ERROR,
+				(errcode(ERRCODE_DATA_CORRUPTED),
+				 errmsg("invalid fork type (%d) in block %u of relation %s",
+						forknum, blocknum, path.str)));
+		}
+
+		LWLockAcquire(BufferDescriptorGetContentLock(buf_hdr), LW_EXCLUSIVE);
+
+		/* Check for no concurrent changes */
+		if (PageGetPageLayoutVersion((Page) bufdata) != PG_PAGE_LAYOUT_VERSION)
+		{
+			Buffer buf = BufferDescriptorGetBuffer(buf_hdr);
+
+			convert_page(relation, bufdata, buf, blocknum);
+		}
+
+		LWLockRelease(BufferDescriptorGetContentLock(buf_hdr));
+	}
+
 	/* Terminate I/O and set BM_VALID. */
 	set_flag_bits = failed ? BM_IO_ERROR : BM_VALID;
 	if (is_temp)
@@ -7184,6 +7334,7 @@ buffer_readv_complete(PgAioHandle *ioh, PgAioResult prior_result,
 	uint8		checkfail_count = 0;
 	uint64	   *io_data;
 	uint8		handle_data_len;
+	Relation	relation;
 
 	if (is_temp)
 	{
@@ -7198,6 +7349,7 @@ buffer_readv_complete(PgAioHandle *ioh, PgAioResult prior_result,
 	 * per-buffer completion function for each buffer.
 	 */
 	io_data = pgaio_io_get_handle_data(ioh, &handle_data_len);
+	relation = pgaio_io_get_handle_pointer(ioh);
 	for (uint8 buf_off = 0; buf_off < handle_data_len; buf_off++)
 	{
 		Buffer		buf = io_data[buf_off];
@@ -7222,7 +7374,8 @@ buffer_readv_complete(PgAioHandle *ioh, PgAioResult prior_result,
 								  &failed_verification,
 								  &failed_checksum,
 								  &ignored_checksum,
-								  &zeroed_buffer);
+								  &zeroed_buffer,
+								  relation);
 
 		/*
 		 * Track information about the number of different kinds of error

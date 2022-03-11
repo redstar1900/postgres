@@ -138,7 +138,6 @@ consume_xids_common(FullTransactionId untilxid, uint64 nxids)
 			if (nxids > 0)
 				elog(NOTICE, "consumed %" PRIu64 " / %" PRIu64 " XIDs, latest %llu",
 					 consumed, nxids,
-					 EpochFromFullTransactionId(lastxid),
 					 (unsigned long long) U64FromFullTransactionId(lastxid));
 			else
 				elog(NOTICE, "consumed up to %llu / %llu",

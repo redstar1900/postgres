@@ -216,12 +216,12 @@ typedef enum VacOptValue
  */
 typedef struct VacuumParams
 {
-	bits32		options;		/* bitmask of VACOPT_* */
-	int			freeze_min_age; /* min freeze age, -1 to use default */
-	int			freeze_table_age;	/* age at which to scan whole table */
-	int			multixact_freeze_min_age;	/* min multixact freeze age, -1 to
+	bits32		options;		/* bitmask of VacuumOption */
+	int64		freeze_min_age; /* min freeze age, -1 to use default */
+	int64		freeze_table_age;	/* age at which to scan whole table */
+	int64		multixact_freeze_min_age;	/* min multixact freeze age, -1 to
 											 * use default */
-	int			multixact_freeze_table_age; /* multixact age at which to scan
+	int64		multixact_freeze_table_age; /* multixact age at which to scan
 											 * whole table */
 	bool		is_wraparound;	/* force a for-wraparound vacuum */
 	int			log_min_duration;	/* minimum execution threshold in ms at
@@ -297,12 +297,12 @@ typedef struct VacDeadItemsInfo
 
 /* GUC parameters */
 extern PGDLLIMPORT int default_statistics_target;	/* PGDLLIMPORT for PostGIS */
-extern PGDLLIMPORT int vacuum_freeze_min_age;
-extern PGDLLIMPORT int vacuum_freeze_table_age;
-extern PGDLLIMPORT int vacuum_multixact_freeze_min_age;
-extern PGDLLIMPORT int vacuum_multixact_freeze_table_age;
-extern PGDLLIMPORT int vacuum_failsafe_age;
-extern PGDLLIMPORT int vacuum_multixact_failsafe_age;
+extern PGDLLIMPORT int64 vacuum_freeze_min_age;
+extern PGDLLIMPORT int64 vacuum_freeze_table_age;
+extern PGDLLIMPORT int64 vacuum_multixact_freeze_min_age;
+extern PGDLLIMPORT int64 vacuum_multixact_freeze_table_age;
+extern PGDLLIMPORT int64 vacuum_failsafe_age;
+extern PGDLLIMPORT int64 vacuum_multixact_failsafe_age;
 extern PGDLLIMPORT bool track_cost_delay_timing;
 extern PGDLLIMPORT bool vacuum_truncate;
 

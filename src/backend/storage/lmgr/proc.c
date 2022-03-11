@@ -255,7 +255,7 @@ InitProcGlobal(void)
 	 * XXX: It might make sense to increase padding for these arrays, given
 	 * how hotly they are accessed.
 	 */
-	ProcGlobal->xids = (TransactionId *) ptr;
+	ProcGlobal->xids = (pg_atomic_uint64 *) ptr;
 	ptr = (char *) ptr + (TotalProcs * sizeof(*ProcGlobal->xids));
 
 	ProcGlobal->subxidStates = (XidCacheStatus *) ptr;
@@ -291,6 +291,8 @@ InitProcGlobal(void)
 		PGPROC	   *proc = &procs[i];
 
 		/* Common initialization for all PGPROCs, regardless of type. */
+
+		pg_atomic_init_u64(&ProcGlobal->xids[i], 0);
 
 		/*
 		 * Set the fast-path lock arrays, and move the pointer. We interleave
@@ -472,8 +474,8 @@ InitProcess(void)
 	MyProc->waitStatus = PROC_WAIT_STATUS_OK;
 	MyProc->fpVXIDLock = false;
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
-	MyProc->xid = InvalidTransactionId;
-	MyProc->xmin = InvalidTransactionId;
+	pg_atomic_init_u64(&MyProc->xid, InvalidTransactionId);
+	pg_atomic_init_u64(&MyProc->xmin, InvalidTransactionId);
 	MyProc->pid = MyProcPid;
 	MyProc->vxid.procNumber = MyProcNumber;
 	MyProc->vxid.lxid = InvalidLocalTransactionId;
@@ -673,8 +675,8 @@ InitAuxiliaryProcess(void)
 	MyProc->waitStatus = PROC_WAIT_STATUS_OK;
 	MyProc->fpVXIDLock = false;
 	MyProc->fpLocalTransactionId = InvalidLocalTransactionId;
-	MyProc->xid = InvalidTransactionId;
-	MyProc->xmin = InvalidTransactionId;
+	pg_atomic_init_u64(&MyProc->xid, InvalidTransactionId);
+	pg_atomic_init_u64(&MyProc->xmin, InvalidTransactionId);
 	MyProc->vxid.procNumber = INVALID_PROC_NUMBER;
 	MyProc->vxid.lxid = InvalidLocalTransactionId;
 	MyProc->databaseId = InvalidOid;

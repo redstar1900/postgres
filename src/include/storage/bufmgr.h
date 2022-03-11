@@ -289,8 +289,12 @@ extern void BufferGetTag(Buffer buffer, RelFileLocator *rlocator,
 						 ForkNumber *forknum, BlockNumber *blknum);
 
 extern void MarkBufferDirtyHint(Buffer buffer, bool buffer_std);
+extern void MarkBufferConverted(Buffer buffer, bool converted);
+extern bool IsBufferConverted(Buffer buffer);
 
 extern void UnlockBuffers(void);
+extern bool IsBufferLocked(Buffer buffer);
+extern bool IsBufferLockedExclusive(Buffer buffer);
 extern void LockBuffer(Buffer buffer, int mode);
 extern bool ConditionalLockBuffer(Buffer buffer);
 extern void LockBufferForCleanup(Buffer buffer);
@@ -333,6 +337,8 @@ extern int	GetAccessStrategyPinLimit(BufferAccessStrategy strategy);
 
 extern void FreeAccessStrategy(BufferAccessStrategy strategy);
 
+/* old tuple format support */
+extern void convert_page(Relation rel, Page orig_page, Buffer buf, BlockNumber blkno);
 
 /* inline functions */
 

@@ -43,6 +43,8 @@
 
 #include <time.h>
 
+#include "access/multixact.h"
+#include "access/transam.h"
 #include "catalog/pg_class_d.h"
 #include "common/file_perm.h"
 #include "common/logging.h"
@@ -61,7 +63,7 @@ static void set_new_cluster_char_signedness(void);
 static void set_locale_and_encoding(void);
 static void prepare_new_cluster(void);
 static void prepare_new_globals(void);
-static void create_new_objects(void);
+static void create_new_objects(bool is_wraparound);
 static void copy_xact_xlog_xid(void);
 static void set_frozenxids(bool minmxid_only);
 static void make_outputdirs(char *pgdata);
@@ -88,6 +90,7 @@ int
 main(int argc, char **argv)
 {
 	char	   *deletion_script_file_name = NULL;
+	bool		is_wraparound = false;
 
 	/*
 	 * pg_upgrade doesn't currently use common/logging.c, but initialize it
@@ -133,7 +136,7 @@ main(int argc, char **argv)
 
 	check_cluster_compatibility();
 
-	check_and_dump_old_cluster();
+	check_and_dump_old_cluster(&is_wraparound);
 
 
 	/* -- NEW -- */
@@ -167,7 +170,7 @@ main(int argc, char **argv)
 
 	prepare_new_globals();
 
-	create_new_objects();
+	create_new_objects(is_wraparound);
 
 	stop_postmaster(false);
 
@@ -569,7 +572,7 @@ prepare_new_globals(void)
 
 
 static void
-create_new_objects(void)
+create_new_objects(bool is_wraparound)
 {
 	int			dbnum;
 	PGconn	   *conn_new_template1;
@@ -691,11 +694,23 @@ create_new_objects(void)
 	check_ok();
 
 	/*
-	 * We don't have minmxids for databases or relations in pre-9.3 clusters,
-	 * so set those after we have restored the schema.
+	 * Refix datfrozenxid and datminmxid
 	 */
 	if (GET_MAJOR_VERSION(old_cluster.major_version) <= 902)
 		set_frozenxids(true);
+	else if (old_cluster.controldata.cat_ver < XID_FORMATCHANGE_CAT_VER &&
+			 new_cluster.controldata.cat_ver >= XID_FORMATCHANGE_CAT_VER)
+	{
+		/*
+		 * During upgrade from 32-bit to 64-bit xids save relfrozenxids if
+		 * there was no wraparound in old cluster. Otherwise, reset them to
+		 * FirstNormalTransactionId value.
+		 */
+		if (is_wraparound)
+			set_frozenxids(false);
+		else
+			set_frozenxids(true);
+	}
 
 	/* update new_cluster info now that we have objects in the databases */
 	get_db_rel_and_slot_infos(&new_cluster);
@@ -749,14 +764,37 @@ copy_subdir_files(const char *old_subdir, const char *new_subdir)
 static void
 copy_xact_xlog_xid(void)
 {
-	/*
-	 * Copy old commit logs to new data dir. pg_clog has been renamed to
-	 * pg_xact in post-10 clusters.
-	 */
-	copy_subdir_files(GET_MAJOR_VERSION(old_cluster.major_version) <= 906 ?
-					  "pg_clog" : "pg_xact",
-					  GET_MAJOR_VERSION(new_cluster.major_version) <= 906 ?
-					  "pg_clog" : "pg_xact");
+	TransactionId next_xid;
+
+#define GetClogDirName(cluster) \
+	GET_MAJOR_VERSION(cluster.major_version) <= 906 ? "pg_clog" : "pg_xact"
+
+	/* Set next xid to 2^32 if we're upgrading from 32 bit postgres */
+	if (old_cluster.controldata.cat_ver < XID_FORMATCHANGE_CAT_VER &&
+		new_cluster.controldata.cat_ver >= XID_FORMATCHANGE_CAT_VER)
+		next_xid = ((TransactionId) 1 << 32);
+	else
+		next_xid = old_cluster.controldata.chkpnt_nxtxid;
+
+	if (old_cluster.controldata.cat_ver < XID_FORMATCHANGE_CAT_VER &&
+		new_cluster.controldata.cat_ver >= XID_FORMATCHANGE_CAT_VER)
+	{
+		/* Convert commit logs and copy to the new data dir */
+		prep_status("Transforming commit log segments");
+		convert_xact(psprintf("%s/%s", old_cluster.pgdata, GetClogDirName(old_cluster)),
+					 psprintf("%s/%s", new_cluster.pgdata, GetClogDirName(new_cluster)));
+		check_ok();
+	}
+	else
+	{
+		/*
+		 * Copy old commit logs to new data dir. pg_clog has been renamed to
+		 * pg_xact in post-10 clusters.
+		 */
+		prep_status("Copying commit log segments");
+		copy_subdir_files(GetClogDirName(old_cluster), GetClogDirName(new_cluster));
+		check_ok();
+	}
 
 	prep_status("Setting oldest XID for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
@@ -770,19 +808,20 @@ copy_xact_xlog_xid(void)
 	prep_status("Setting next transaction ID and epoch for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 			  "\"%s/pg_resetwal\" -f -x %llu \"%s\"",
-			  new_cluster.bindir,
-			  (unsigned long long) old_cluster.controldata.chkpnt_nxtxid,
+			  new_cluster.bindir, (unsigned long long) next_xid,
 			  new_cluster.pgdata);
+#ifdef NOT_USED
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 			  "\"%s/pg_resetwal\" -f -e %u \"%s\"",
 			  new_cluster.bindir, old_cluster.controldata.chkpnt_nxtepoch,
 			  new_cluster.pgdata);
+#endif
 	/* must reset commit timestamp limits also */
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 			  "\"%s/pg_resetwal\" -f -c %llu,%llu \"%s\"",
 			  new_cluster.bindir,
-			  (unsigned long long) old_cluster.controldata.chkpnt_nxtxid,
-			  (unsigned long long) old_cluster.controldata.chkpnt_nxtxid,
+			  (unsigned long long) next_xid,
+			  (unsigned long long) next_xid,
 			  new_cluster.pgdata);
 	check_ok();
 
@@ -795,8 +834,48 @@ copy_xact_xlog_xid(void)
 	if (old_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER &&
 		new_cluster.controldata.cat_ver >= MULTIXACT_FORMATCHANGE_CAT_VER)
 	{
-		copy_subdir_files("pg_multixact/offsets", "pg_multixact/offsets");
-		copy_subdir_files("pg_multixact/members", "pg_multixact/members");
+		uint64		oldest_mxid = old_cluster.controldata.chkpnt_oldstMulti;
+		uint64		next_mxid = old_cluster.controldata.chkpnt_nxtmulti;
+		uint64		next_mxoff = old_cluster.controldata.chkpnt_nxtmxoff;
+
+		if (old_cluster.controldata.cat_ver >= XID_FORMATCHANGE_CAT_VER)
+		{
+			copy_subdir_files("pg_multixact/offsets", "pg_multixact/offsets");
+			copy_subdir_files("pg_multixact/members", "pg_multixact/members");
+		}
+		else
+		{
+			MultiXactOffset oldest_mxoff;
+
+			remove_new_subdir("pg_multixact/offsets", false);
+			oldest_mxoff = convert_multixact_offsets("pg_multixact/offsets", "pg_multixact/offsets");
+
+			remove_new_subdir("pg_multixact/members", false);
+			convert_multixact_members("pg_multixact/members", "pg_multixact/members", oldest_mxoff);
+
+			/*
+			 * Handle wraparound if we're upgrading from 32 bit postgres.
+			 * Invalid 0 mxids/offsets are skipped, so 1 becomes 2^32.
+			 */
+			if (oldest_mxoff)
+			{
+				if (next_mxid < oldest_mxid)
+					next_mxid += ((MultiXactId) 1 << 32) - FirstMultiXactId;
+
+				if (next_mxoff < oldest_mxoff)
+					next_mxoff += ((MultiXactOffset) 1 << 32) - 1;
+
+				/* Offsets and members were rewritten, oldest_mxoff = 1 */
+				next_mxoff -= oldest_mxoff - 1;
+				oldest_mxoff = 1;
+
+				/*
+				 * Save converted next_mxid for possible usage in
+				 * set_frozenxids()
+				 */
+				old_cluster.controldata.chkpnt_nxtmulti = next_mxid;
+			}
+		}
 
 		prep_status("Setting next multixact ID and offset for new cluster");
 
@@ -807,9 +886,9 @@ copy_xact_xlog_xid(void)
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 				  "\"%s/pg_resetwal\" -O %llu -m %llu,%llu \"%s\"",
 				  new_cluster.bindir,
-				  (unsigned long long) old_cluster.controldata.chkpnt_nxtmxoff,
-				  (unsigned long long) old_cluster.controldata.chkpnt_nxtmulti,
-				  (unsigned long long) old_cluster.controldata.chkpnt_oldstMulti,
+				  (unsigned long long) next_mxoff,
+				  (unsigned long long) next_mxid,
+				  (unsigned long long) oldest_mxid,
 				  new_cluster.pgdata);
 		check_ok();
 	}
@@ -883,6 +962,8 @@ set_frozenxids(bool minmxid_only)
 	int			ntups;
 	int			i_datname;
 	int			i_datallowconn;
+	TransactionId frozen_xid;
+	MultiXactId minmxid;
 
 	if (!minmxid_only)
 		prep_status("Setting frozenxid and minmxid counters in new cluster");
@@ -891,18 +972,26 @@ set_frozenxids(bool minmxid_only)
 
 	conn_template1 = connectToServer(&new_cluster, "template1");
 
+	if (old_cluster.controldata.cat_ver < XID_FORMATCHANGE_CAT_VER &&
+		new_cluster.controldata.cat_ver >= XID_FORMATCHANGE_CAT_VER)
+		frozen_xid = FirstNormalTransactionId;
+	else
+		frozen_xid = old_cluster.controldata.chkpnt_nxtxid;
+
+	minmxid = old_cluster.controldata.chkpnt_nxtmulti;
+
 	if (!minmxid_only)
 		/* set pg_database.datfrozenxid */
 		PQclear(executeQueryOrDie(conn_template1,
 								  "UPDATE pg_catalog.pg_database "
 								  "SET	datfrozenxid = '%llu'",
-								  (unsigned long long) old_cluster.controldata.chkpnt_nxtxid));
+								  (unsigned long long) frozen_xid));
 
 	/* set pg_database.datminmxid */
 	PQclear(executeQueryOrDie(conn_template1,
 							  "UPDATE pg_catalog.pg_database "
 							  "SET	datminmxid = '%llu'",
-							  (unsigned long long) old_cluster.controldata.chkpnt_nxtmulti));
+							  (unsigned long long) minmxid));
 
 	/* get database names */
 	dbres = executeQueryOrDie(conn_template1,
@@ -942,7 +1031,7 @@ set_frozenxids(bool minmxid_only)
 									  CppAsString2(RELKIND_RELATION) ", "
 									  CppAsString2(RELKIND_MATVIEW) ", "
 									  CppAsString2(RELKIND_TOASTVALUE) ")",
-									  (unsigned long long) old_cluster.controldata.chkpnt_nxtxid));
+									  (unsigned long long) frozen_xid));
 
 		/* set pg_class.relminmxid */
 		PQclear(executeQueryOrDie(conn,
@@ -953,7 +1042,7 @@ set_frozenxids(bool minmxid_only)
 								  CppAsString2(RELKIND_RELATION) ", "
 								  CppAsString2(RELKIND_MATVIEW) ", "
 								  CppAsString2(RELKIND_TOASTVALUE) ")",
-								  (unsigned long long) old_cluster.controldata.chkpnt_nxtmulti));
+								  (unsigned long long) minmxid));
 		PQfinish(conn);
 
 		/* Reset datallowconn flag */

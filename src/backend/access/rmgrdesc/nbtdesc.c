@@ -96,7 +96,7 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 
 				appendStringInfo(buf, "left: %u, right: %u, level: %u, safexid: %llu, ",
 								 xlrec->leftsib, xlrec->rightsib, xlrec->level,
-								 (unsigned long long) U64FromFullTransactionId(xlrec->safexid));
+								 (unsigned long long) XidFromFullTransactionId(xlrec->safexid));
 				appendStringInfo(buf, "leafleft: %u, leafright: %u, leaftopparent: %u",
 								 xlrec->leafleftsib, xlrec->leafrightsib,
 								 xlrec->leaftopparent);
@@ -116,7 +116,7 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfo(buf, "rel: %u/%u/%u, snapshotConflictHorizon: %llu, isCatalogRel: %c",
 								 xlrec->locator.spcOid, xlrec->locator.dbOid,
 								 xlrec->locator.relNumber,
-								 (unsigned long long) U64FromFullTransactionId(xlrec->snapshotConflictHorizon),
+								 (unsigned long long) XidFromFullTransactionId(xlrec->snapshotConflictHorizon),
 								 xlrec->isCatalogRel ? 'T' : 'F');
 				break;
 			}

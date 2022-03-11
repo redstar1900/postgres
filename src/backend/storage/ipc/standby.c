@@ -522,8 +522,8 @@ ResolveRecoveryConflictWithSnapshotFullXid(FullTransactionId snapshotConflictHor
 	FullTransactionId nextXid = ReadNextFullTransactionId();
 	uint64		diff;
 
-	diff = U64FromFullTransactionId(nextXid) -
-		U64FromFullTransactionId(snapshotConflictHorizon);
+	diff = XidFromFullTransactionId(nextXid) -
+		XidFromFullTransactionId(snapshotConflictHorizon);
 	if (diff < MaxTransactionId / 2)
 	{
 		TransactionId truncated;

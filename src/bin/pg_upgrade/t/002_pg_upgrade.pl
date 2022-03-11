@@ -363,6 +363,13 @@ if (defined($ENV{oldinstall}))
 # old node.
 $oldnode->append_conf('postgresql.conf', 'autovacuum = off');
 $oldnode->restart;
+$oldnode->safe_psql('regression',
+	"CREATE TABLE t1 (id SERIAL NOT NULL PRIMARY KEY, plt text, pln NUMERIC(8, 4));
+	 INSERT INTO t1 (plt, pln) SELECT md5(random()::text), random() * 9999 FROM generate_series(1, 1000);");
+my $relfrozenxid = $oldnode->safe_psql('regression',
+	"SELECT relfrozenxid FROM pg_class WHERE relname = 't1';");
+my $relminmxid = $oldnode->safe_psql('regression',
+	"SELECT relminmxid FROM pg_class WHERE relname = 't1';");
 
 # Test that dump/restore of the regression database roundtrips cleanly.  This
 # doesn't work well when the nodes are different versions, so skip it in that
@@ -583,6 +590,16 @@ ok( !-d $newnode->data_dir . "/pg_upgrade_output.d",
 	"pg_upgrade_output.d/ removed after pg_upgrade success");
 
 $newnode->start;
+
+my $relfrozenxid_new = $newnode->safe_psql('regression',
+	"SELECT relfrozenxid FROM pg_class WHERE relname = 't1';");
+
+is($relfrozenxid_new, $relfrozenxid, 'old and new relfrozenxid match after pg_upgrade');
+
+my $relminmxid_new = $newnode->safe_psql('regression',
+	"SELECT relminmxid FROM pg_class WHERE relname = 't1';");
+
+is($relminmxid_new, $relminmxid, 'old and new relminmxid match after pg_upgrade');
 
 # Check if there are any logs coming from pg_upgrade, that would only be
 # retained on failure.

@@ -117,7 +117,7 @@ static const struct typinfo TypInfo[] = {
 	F_OIDIN, F_OIDOUT},
 	{"tid", TIDOID, 0, 6, false, TYPALIGN_SHORT, TYPSTORAGE_PLAIN, InvalidOid,
 	F_TIDIN, F_TIDOUT},
-	{"xid", XIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
+	{"xid", XIDOID, 0, 8, FLOAT8PASSBYVAL, TYPALIGN_XID, TYPSTORAGE_PLAIN, InvalidOid,
 	F_XIDIN, F_XIDOUT},
 	{"cid", CIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
 	F_CIDIN, F_CIDOUT},

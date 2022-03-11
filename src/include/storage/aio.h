@@ -314,7 +314,8 @@ extern void pgaio_io_set_handle_data_64(PgAioHandle *ioh, uint64 *data, uint8 le
 extern void pgaio_io_set_handle_data_32(PgAioHandle *ioh, uint32 *data, uint8 len);
 extern uint64 *pgaio_io_get_handle_data(PgAioHandle *ioh, uint8 *len);
 
-
+extern void pgaio_io_set_handle_pointer(PgAioHandle *ioh, void *ptr);
+extern void *pgaio_io_get_handle_pointer(PgAioHandle *ioh);
 
 /* --------------------------------------------------------------------------------
  * IO Wait References

@@ -521,7 +521,7 @@ recheck:
 	if (function)
 	{
 		/* We have a compiled function, but is it still valid? */
-		if (function->fn_xmin == HeapTupleHeaderGetRawXmin(procTup->t_data) &&
+		if (function->fn_xmin == HeapTupleGetRawXmin(procTup) &&
 			ItemPointerEquals(&function->fn_tid, &procTup->t_self))
 			function_valid = true;
 		else
@@ -615,7 +615,7 @@ recheck:
 		 * function from looking valid before it's fully built.)  fn_hashkey
 		 * will be set by cfunc_hashtable_insert; use_count remains zero.
 		 */
-		function->fn_xmin = HeapTupleHeaderGetRawXmin(procTup->t_data);
+		function->fn_xmin = HeapTupleGetRawXmin(procTup);
 		function->fn_tid = procTup->t_self;
 		function->dcallback = dcallback;
 

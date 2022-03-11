@@ -576,7 +576,7 @@ handle_streamed_transaction(LogicalRepMsgType action, StringInfo s)
 	 * We should have received XID of the subxact as the first part of the
 	 * message, so extract it.
 	 */
-	current_xid = pq_getmsgint(s, 4);
+	current_xid = pq_getmsgint64(s);
 
 	if (!TransactionIdIsValid(current_xid))
 		ereport(ERROR,

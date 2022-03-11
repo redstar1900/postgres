@@ -759,7 +759,7 @@ overexplain_intlist(const char *qlabel, List *list, ExplainState *es)
 	else if (IsA(list, XidList))
 	{
 		foreach_xid(x, list)
-			appendStringInfo(&buf, " %u", x);
+			appendStringInfo(&buf, " %llu", (unsigned long long) x);
 	}
 	else
 	{

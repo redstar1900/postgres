@@ -390,7 +390,7 @@ tts_heap_is_current_xact_tuple(TupleTableSlot *slot)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("don't have a storage tuple in this context")));
 
-	xmin = HeapTupleHeaderGetRawXmin(hslot->tuple->t_data);
+	xmin = HeapTupleGetRawXmin(hslot->tuple);
 
 	return TransactionIdIsCurrentTransactionId(xmin);
 }
@@ -795,7 +795,7 @@ tts_buffer_is_current_xact_tuple(TupleTableSlot *slot)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("don't have a storage tuple in this context")));
 
-	xmin = HeapTupleHeaderGetRawXmin(bslot->base.tuple->t_data);
+	xmin = HeapTupleGetRawXmin(bslot->base.tuple);
 
 	return TransactionIdIsCurrentTransactionId(xmin);
 }

@@ -110,7 +110,7 @@ typedef struct relopt_int64
 	int64		default_val;
 	int64		min;
 	int64		max;
-}			relopt_int64;
+} relopt_int64;
 
 typedef struct relopt_real
 {

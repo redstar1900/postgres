@@ -73,6 +73,5 @@ removable_cutoff(PG_FUNCTION_ARGS)
 	if (rel)
 		table_close(rel, AccessShareLock);
 
-	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromAllowableAt(next_fxid,
-																 xid));
+	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromXid(xid));
 }

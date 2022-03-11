@@ -35,7 +35,7 @@ xidin(PG_FUNCTION_ARGS)
 	char	   *str = PG_GETARG_CSTRING(0);
 	TransactionId result;
 
-	result = uint32in_subr(str, NULL, "xid", fcinfo->context);
+	result = uint64in_subr(str, NULL, "xid", fcinfo->context);
 	PG_RETURN_TRANSACTIONID(result);
 }
 
@@ -43,9 +43,9 @@ Datum
 xidout(PG_FUNCTION_ARGS)
 {
 	TransactionId transactionId = PG_GETARG_TRANSACTIONID(0);
-	char	   *result = (char *) palloc(16);
+	char	   *result = (char *) palloc(32);
 
-	snprintf(result, 16, "%lu", (unsigned long) transactionId);
+	snprintf(result, 32, "%llu", (unsigned long long) transactionId);
 	PG_RETURN_CSTRING(result);
 }
 
@@ -56,8 +56,13 @@ Datum
 xidrecv(PG_FUNCTION_ARGS)
 {
 	StringInfo	buf = (StringInfo) PG_GETARG_POINTER(0);
+	uint32		lo,
+				hi;
 
-	PG_RETURN_TRANSACTIONID((TransactionId) pq_getmsgint(buf, sizeof(TransactionId)));
+	lo = (uint32) pq_getmsgint(buf, sizeof(TransactionId));
+	hi = (uint32) pq_getmsgint(buf, sizeof(TransactionId));
+
+	PG_RETURN_TRANSACTIONID((uint64) lo + ((uint64) hi << 32));
 }
 
 /*
@@ -68,9 +73,15 @@ xidsend(PG_FUNCTION_ARGS)
 {
 	TransactionId arg1 = PG_GETARG_TRANSACTIONID(0);
 	StringInfoData buf;
+	uint32		lo,
+				hi;
+
+	lo = (uint32) (arg1 & 0xFFFFFFFF);
+	hi = (uint32) (arg1 >> 32);
 
 	pq_begintypsend(&buf);
-	pq_sendint32(&buf, arg1);
+	pq_sendint(&buf, lo, sizeof(lo));
+	pq_sendint(&buf, hi, sizeof(hi));
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 
@@ -101,13 +112,13 @@ xidneq(PG_FUNCTION_ARGS)
 Datum
 hashxid(PG_FUNCTION_ARGS)
 {
-	return hash_uint32(PG_GETARG_TRANSACTIONID(0));
+	return hashxid8(fcinfo);
 }
 
 Datum
 hashxidextended(PG_FUNCTION_ARGS)
 {
-	return hash_uint32_extended(PG_GETARG_TRANSACTIONID(0), PG_GETARG_INT64(1));
+	return hashint8extended(fcinfo);
 }
 
 /*
@@ -121,9 +132,9 @@ xid_age(PG_FUNCTION_ARGS)
 
 	/* Permanent XIDs are always infinitely old */
 	if (!TransactionIdIsNormal(xid))
-		PG_RETURN_INT32(INT_MAX);
+		PG_RETURN_INT64(PG_INT8_MAX);
 
-	PG_RETURN_INT32((int32) (now - xid));
+	PG_RETURN_INT64((int64) (now - xid));
 }
 
 /*
@@ -136,9 +147,9 @@ mxid_age(PG_FUNCTION_ARGS)
 	MultiXactId now = ReadNextMultiXactId();
 
 	if (!MultiXactIdIsValid(xid))
-		PG_RETURN_INT32(INT_MAX);
+		PG_RETURN_INT64(PG_INT8_MAX);
 
-	PG_RETURN_INT32((int32) (now - xid));
+	PG_RETURN_INT64((int64) (now - xid));
 }
 
 /*
@@ -154,7 +165,7 @@ xidComparator(const void *arg1, const void *arg2)
 	TransactionId xid1 = *(const TransactionId *) arg1;
 	TransactionId xid2 = *(const TransactionId *) arg2;
 
-	return pg_cmp_u32(xid1, xid2);
+	return pg_cmp_u64(xid1, xid2);
 }
 
 /*
@@ -198,7 +209,7 @@ xid8in(PG_FUNCTION_ARGS)
 	uint64		result;
 
 	result = uint64in_subr(str, NULL, "xid8", fcinfo->context);
-	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromU64(result));
+	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromXid(result));
 }
 
 Datum
@@ -207,7 +218,7 @@ xid8out(PG_FUNCTION_ARGS)
 	FullTransactionId fxid = PG_GETARG_FULLTRANSACTIONID(0);
 	char	   *result = (char *) palloc(21);
 
-	snprintf(result, 21, UINT64_FORMAT, U64FromFullTransactionId(fxid));
+	snprintf(result, 21, UINT64_FORMAT, XidFromFullTransactionId(fxid));
 	PG_RETURN_CSTRING(result);
 }
 
@@ -218,7 +229,7 @@ xid8recv(PG_FUNCTION_ARGS)
 	uint64		value;
 
 	value = (uint64) pq_getmsgint64(buf);
-	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromU64(value));
+	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromXid(value));
 }
 
 Datum
@@ -228,7 +239,7 @@ xid8send(PG_FUNCTION_ARGS)
 	StringInfoData buf;
 
 	pq_begintypsend(&buf);
-	pq_sendint64(&buf, (uint64) U64FromFullTransactionId(arg1));
+	pq_sendint64(&buf, (uint64) XidFromFullTransactionId(arg1));
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 

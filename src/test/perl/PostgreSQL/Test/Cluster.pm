@@ -640,11 +640,26 @@ sub init
 		or !defined $ENV{INITDB_TEMPLATE})
 	{
 		note("initializing database system by running initdb");
-		PostgreSQL::Test::Utils::system_or_bail(
-			'initdb', '--no-sync',
-			'--pgdata' => $pgdata,
-			'--auth' => 'trust',
-			@{ $params{extra} });
+
+		if ($params{no_data_checksums})
+		{
+			PostgreSQL::Test::Utils::system_or_bail(
+				'initdb', '--no-sync',
+				'--pgdata' => $pgdata,
+				'--auth' => 'trust',
+				@{ $params{extra} });
+		}
+		else
+		{
+			PostgreSQL::Test::Utils::system_or_bail(
+				'initdb', '--no-sync',
+				'--pgdata' => $pgdata,
+				'--auth' => 'trust',
+				'--xid' => '1249835483136',
+				'--multixact-id' => '2422361554944',
+				'--multixact-offset' => '3594887626752',
+				@{ $params{extra} });
+		}
 	}
 	else
 	{

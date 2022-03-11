@@ -46,6 +46,7 @@ typedef union ListCell
 {
 	void	   *ptr_value;
 	int			int_value;
+	int64		int64_value;
 	Oid			oid_value;
 	TransactionId xid_value;
 } ListCell;
@@ -171,6 +172,7 @@ list_length(const List *l)
  */
 #define lfirst(lc)				((lc)->ptr_value)
 #define lfirst_int(lc)			((lc)->int_value)
+#define lfirst_int64(lc)		((lc)->int64_value)
 #define lfirst_oid(lc)			((lc)->oid_value)
 #define lfirst_xid(lc)			((lc)->xid_value)
 #define lfirst_node(type,lc)	castNode(type, lfirst(lc))
@@ -197,6 +199,7 @@ list_length(const List *l)
 
 #define llast(l)				lfirst(list_last_cell(l))
 #define llast_int(l)			lfirst_int(list_last_cell(l))
+#define llast_int64(l)			lfirst_int64(list_last_cell(l))
 #define llast_oid(l)			lfirst_oid(list_last_cell(l))
 #define llast_xid(l)			lfirst_xid(list_last_cell(l))
 #define llast_node(type,l)		castNode(type, llast(l))
@@ -610,6 +613,7 @@ extern List *list_make5_impl(NodeTag t, ListCell datum1, ListCell datum2,
 
 pg_nodiscard extern List *lappend(List *list, void *datum);
 pg_nodiscard extern List *lappend_int(List *list, int datum);
+pg_nodiscard extern List *lappend_int64(List *list, int64 datum);
 pg_nodiscard extern List *lappend_oid(List *list, Oid datum);
 pg_nodiscard extern List *lappend_xid(List *list, TransactionId datum);
 

@@ -96,15 +96,6 @@ command_fails_like(
 	[ 'pg_resetwal', '-c' => '10,1', $node->data_dir ],
 	qr/greater than/,
 	'fails with -c value 1 part 2');
-# -e
-command_fails_like(
-	[ 'pg_resetwal', '-e' => 'foo', $node->data_dir ],
-	qr/error: invalid argument for option -e/,
-	'fails with incorrect -e option');
-command_fails_like(
-	[ 'pg_resetwal', '-e' => '-1', $node->data_dir ],
-	qr/must not be -1/,
-	'fails with -e value -1');
 # -l
 command_fails_like(
 	[ 'pg_resetwal', '-l' => 'foo', $node->data_dir ],
@@ -188,7 +179,6 @@ my $blcksz = $1;
 my @cmd = ('pg_resetwal', '--pgdata' => $node->data_dir);
 
 # some not-so-critical hardcoded values
-push @cmd, '--epoch' => 1;
 push @cmd, '--next-wal-file' => '00000001000000320000004B';
 push @cmd, '--next-oid' => 100_000;
 push @cmd, '--wal-segsize' => 1;
@@ -213,7 +203,7 @@ push @cmd,
   sprintf("%d,%d", hex($files[0]) == 0 ? 3 : hex($files[0]), hex($files[-1]));
 
 @files = get_slru_files('pg_multixact/offsets');
-$mult = 32 * $blcksz / 4;
+$mult = 32 * $blcksz / 8;
 # --multixact-ids argument is "new,old"
 push @cmd,
   '--multixact-ids' => sprintf("%d,%d",
@@ -221,7 +211,7 @@ push @cmd,
 	hex($files[0]) == 0 ? 1 : hex($files[0] * $mult));
 
 @files = get_slru_files('pg_multixact/members');
-$mult = 32 * int($blcksz / 20) * 4;
+$mult = 32 * int($blcksz / 72) * 8;
 push @cmd, '--multixact-offset' => (hex($files[-1]) + 1) * $mult;
 
 @files = get_slru_files('pg_xact');

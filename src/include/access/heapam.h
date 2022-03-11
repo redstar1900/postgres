@@ -97,6 +97,8 @@ typedef struct HeapScanDescData
 	uint32		rs_cindex;		/* current tuple's index in vistuples */
 	uint32		rs_ntuples;		/* number of visible tuples on page */
 	OffsetNumber rs_vistuples[MaxHeapTuplesPerPage];	/* their offsets */
+	TransactionId rs_xmin[MaxHeapTuplesPerPage];		/* their xmins */
+	TransactionId rs_xmax[MaxHeapTuplesPerPage];		/* their xmaxs */
 } HeapScanDescData;
 typedef struct HeapScanDescData *HeapScanDesc;
 
@@ -318,6 +320,8 @@ extern void ReleaseBulkInsertStatePin(BulkInsertState bistate);
 
 extern void heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 						int options, BulkInsertState bistate);
+extern void rewrite_page_prepare_for_xid(Page page, HeapTuple tup,
+										 bool is_toast);
 extern void heap_multi_insert(Relation relation, struct TupleTableSlot **slots,
 							  int ntuples, CommandId cid, int options,
 							  BulkInsertState bistate);
@@ -344,23 +348,22 @@ extern void heap_inplace_update_and_unlock(Relation relation,
 										   Buffer buffer);
 extern void heap_inplace_unlock(Relation relation,
 								HeapTuple oldtup, Buffer buffer);
-extern bool heap_prepare_freeze_tuple(HeapTupleHeader tuple,
+extern bool heap_prepare_freeze_tuple(HeapTuple tuple,
 									  const struct VacuumCutoffs *cutoffs,
 									  HeapPageFreeze *pagefrz,
 									  HeapTupleFreeze *frz, bool *totally_frozen);
-
-extern void heap_pre_freeze_checks(Buffer buffer,
+extern void heap_pre_freeze_checks(Relation rel, Buffer buffer,
 								   HeapTupleFreeze *tuples, int ntuples);
-extern void heap_freeze_prepared_tuples(Buffer buffer,
+extern void heap_freeze_prepared_tuples(Relation rel, Buffer buffer,
 										HeapTupleFreeze *tuples, int ntuples);
-extern bool heap_freeze_tuple(HeapTupleHeader tuple,
+extern bool heap_freeze_tuple(HeapTuple tuple,
 							  TransactionId relfrozenxid, TransactionId relminmxid,
 							  TransactionId FreezeLimit, TransactionId MultiXactCutoff);
-extern bool heap_tuple_should_freeze(HeapTupleHeader tuple,
+extern bool heap_tuple_should_freeze(HeapTuple htup,
 									 const struct VacuumCutoffs *cutoffs,
 									 TransactionId *NoFreezePageRelfrozenXid,
 									 MultiXactId *NoFreezePageRelminMxid);
-extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
+extern bool heap_tuple_needs_eventual_freeze(HeapTuple htup);
 
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, ItemPointer tid);
@@ -381,12 +384,15 @@ extern void heap_page_prune_and_freeze(Relation relation, Buffer buffer,
 									   PruneReason reason,
 									   OffsetNumber *off_loc,
 									   TransactionId *new_relfrozen_xid,
-									   MultiXactId *new_relmin_mxid);
+									   MultiXactId *new_relmin_mxid,
+									   bool repairFragmentation);
 extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *redirected, int nredirected,
 									OffsetNumber *nowdead, int ndead,
-									OffsetNumber *nowunused, int nunused);
-extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
+									OffsetNumber *nowunused, int nunused,
+									bool repairFragmentation, bool is_toast);
+extern void heap_get_root_tuples(Relation relation, Buffer buffer, Page page,
+								 OffsetNumber *root_offsets);
 extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  TransactionId conflict_xid,
 									  bool cleanup_lock,
@@ -394,7 +400,8 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  HeapTupleFreeze *frozen, int nfrozen,
 									  OffsetNumber *redirected, int nredirected,
 									  OffsetNumber *dead, int ndead,
-									  OffsetNumber *unused, int nunused);
+									  OffsetNumber *unused, int nunused,
+									  bool repairFragmentation);
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,
@@ -411,7 +418,7 @@ extern HTSV_Result HeapTupleSatisfiesVacuumHorizon(HeapTuple htup, Buffer buffer
 												   TransactionId *dead_after);
 extern void HeapTupleSetHintBits(HeapTupleHeader tuple, Buffer buffer,
 								 uint16 infomask, TransactionId xid);
-extern bool HeapTupleHeaderIsOnlyLocked(HeapTupleHeader tuple);
+extern bool HeapTupleIsOnlyLocked(HeapTuple htup);
 extern bool HeapTupleIsSurelyDead(HeapTuple htup,
 								  struct GlobalVisState *vistest);
 
@@ -438,18 +445,32 @@ extern void HeapCheckForSerializableConflictOut(bool visible, Relation relation,
  * in private storage (which is what CLUSTER and friends do).
  */
 static inline void
-heap_execute_freeze_tuple(HeapTupleHeader tuple, HeapTupleFreeze *frz)
+heap_execute_freeze_tuple(HeapTuple htup, HeapTupleFreeze *frz)
 {
-	HeapTupleHeaderSetXmax(tuple, frz->xmax);
+	HeapTupleHeader tuple = htup->t_data;
+
+	tuple->t_infomask = frz->t_infomask;
+	tuple->t_infomask2 = frz->t_infomask2;
+
+	HeapTupleSetXmax(htup, frz->xmax);
 
 	if (frz->frzflags & XLH_FREEZE_XVAC)
 		HeapTupleHeaderSetXvac(tuple, FrozenTransactionId);
 
 	if (frz->frzflags & XLH_INVALID_XVAC)
 		HeapTupleHeaderSetXvac(tuple, InvalidTransactionId);
+}
 
-	tuple->t_infomask = frz->t_infomask;
-	tuple->t_infomask2 = frz->t_infomask2;
+static inline void
+heap_execute_freeze_tuple_page(Page page, HeapTupleHeader htup,
+							   HeapTupleFreeze *frz)
+{
+	HeapTupleData tuple;
+
+	tuple.t_data = htup;
+	heap_execute_freeze_tuple(&tuple, frz);
+
+	HeapTupleHeaderStoreXmax(page, &tuple);
 }
 
 #endif							/* HEAPAM_H */

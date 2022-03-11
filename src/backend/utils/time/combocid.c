@@ -101,25 +101,27 @@ static CommandId GetRealCmax(CommandId combocid);
  */
 
 CommandId
-HeapTupleHeaderGetCmin(const HeapTupleHeaderData *tup)
+HeapTupleGetCmin(const HeapTupleData *tup)
 {
-	CommandId	cid = HeapTupleHeaderGetRawCommandId(tup);
+	HeapTupleHeader htup = tup->t_data;
+	CommandId	cid = HeapTupleHeaderGetRawCommandId(htup);
 
-	Assert(!(tup->t_infomask & HEAP_MOVED));
-	Assert(TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(tup)));
+	Assert(!(htup->t_infomask & HEAP_MOVED));
+	Assert(TransactionIdIsCurrentTransactionId(HeapTupleGetXmin(tup)));
 
-	if (tup->t_infomask & HEAP_COMBOCID)
+	if (htup->t_infomask & HEAP_COMBOCID)
 		return GetRealCmin(cid);
 	else
 		return cid;
 }
 
 CommandId
-HeapTupleHeaderGetCmax(const HeapTupleHeaderData *tup)
+HeapTupleGetCmax(const HeapTupleData *tup)
 {
-	CommandId	cid = HeapTupleHeaderGetRawCommandId(tup);
+	HeapTupleHeader htup = tup->t_data;
+	CommandId	cid = HeapTupleHeaderGetRawCommandId(htup);
 
-	Assert(!(tup->t_infomask & HEAP_MOVED));
+	Assert(!(htup->t_infomask & HEAP_MOVED));
 
 	/*
 	 * Because GetUpdateXid() performs memory allocations if xmax is a
@@ -128,9 +130,9 @@ HeapTupleHeaderGetCmax(const HeapTupleHeaderData *tup)
 	 * things too much.
 	 */
 	Assert(CritSectionCount > 0 ||
-		   TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetUpdateXid(tup)));
+		   TransactionIdIsCurrentTransactionId(HeapTupleGetUpdateXidAny(tup)));
 
-	if (tup->t_infomask & HEAP_COMBOCID)
+	if (htup->t_infomask & HEAP_COMBOCID)
 		return GetRealCmax(cid);
 	else
 		return cid;
@@ -150,9 +152,7 @@ HeapTupleHeaderGetCmax(const HeapTupleHeaderData *tup)
  * changes the tuple in shared buffers.
  */
 void
-HeapTupleHeaderAdjustCmax(const HeapTupleHeaderData *tup,
-						  CommandId *cmax,
-						  bool *iscombo)
+HeapTupleAdjustCmax(const HeapTupleData *tup, CommandId *cmax, bool *iscombo)
 {
 	/*
 	 * If we're marking a tuple deleted that was inserted by (any
@@ -160,10 +160,10 @@ HeapTupleHeaderAdjustCmax(const HeapTupleHeaderData *tup,
 	 * Test for HeapTupleHeaderXminCommitted() first, because it's cheaper
 	 * than a TransactionIdIsCurrentTransactionId call.
 	 */
-	if (!HeapTupleHeaderXminCommitted(tup) &&
-		TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetRawXmin(tup)))
+	if (!HeapTupleHeaderXminCommitted(tup->t_data) &&
+		TransactionIdIsCurrentTransactionId(HeapTupleGetRawXmin(tup)))
 	{
-		CommandId	cmin = HeapTupleHeaderGetCmin(tup);
+		CommandId	cmin = HeapTupleGetCmin(tup);
 
 		*cmax = GetComboCommandId(cmin, *cmax);
 		*iscombo = true;

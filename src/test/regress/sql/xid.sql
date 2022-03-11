@@ -19,7 +19,7 @@ select 'asdf'::xid8;
 -- Also try it with non-error-throwing API
 SELECT pg_input_is_valid('42', 'xid');
 SELECT pg_input_is_valid('asdf', 'xid');
-SELECT * FROM pg_input_error_info('0xffffffffff', 'xid');
+SELECT * FROM pg_input_error_info('0xffffffffffffffffffff', 'xid');
 SELECT pg_input_is_valid('42', 'xid8');
 SELECT pg_input_is_valid('asdf', 'xid8');
 SELECT * FROM pg_input_error_info('0xffffffffffffffffffff', 'xid8');

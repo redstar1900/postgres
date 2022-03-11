@@ -162,7 +162,26 @@ pgaio_io_get_handle_data(PgAioHandle *ioh, uint8 *len)
 	return &pgaio_ctl->handle_data[ioh->iovec_off];
 }
 
+/*
+ * Save custom pointer.
+ */
+void
+pgaio_io_set_handle_pointer(PgAioHandle *ioh, void *ptr)
+{
+	pgaio_ctl->ptr = ptr;
+}
 
+/*
+ * Return data set with pgaio_io_set_handle_data_*().
+ */
+void *
+pgaio_io_get_handle_pointer(PgAioHandle *ioh)
+{
+	void *ptr = pgaio_ctl->ptr;
+
+	pgaio_ctl->ptr = NULL;
+	return ptr;
+}
 
 /* --------------------------------------------------------------------------------
  * Public IO Result related functions

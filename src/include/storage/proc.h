@@ -184,12 +184,12 @@ struct PGPROC
 	Latch		procLatch;		/* generic latch for process */
 
 
-	TransactionId xid;			/* id of top-level transaction currently being
+	pg_atomic_uint64 xid;		/* id of top-level transaction currently being
 								 * executed by this proc, if running and XID
 								 * is assigned; else InvalidTransactionId.
 								 * mirrored in ProcGlobal->xids[pgxactoff] */
 
-	TransactionId xmin;			/* minimal running XID as it was when we were
+	pg_atomic_uint64 xmin;			/* minimal running XID as it was when we were
 								 * starting our xact, excluding LAZY VACUUM:
 								 * vacuum must not remove tuples deleted by
 								 * xid >= xmin ! */
@@ -386,7 +386,7 @@ typedef struct PROC_HDR
 	PGPROC	   *allProcs;
 
 	/* Array mirroring PGPROC.xid for each PGPROC currently in the procarray */
-	TransactionId *xids;
+	pg_atomic_uint64 *xids;
 
 	/*
 	 * Array mirroring PGPROC.subxidStatus for each PGPROC currently in the

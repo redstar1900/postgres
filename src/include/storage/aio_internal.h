@@ -244,6 +244,8 @@ typedef struct PgAioCtl
 
 	uint32		io_handle_count;
 	PgAioHandle *io_handles;
+
+	void	   *ptr;
 } PgAioCtl;
 
 

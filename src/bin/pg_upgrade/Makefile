@@ -23,6 +23,7 @@ OBJS = \
 	parallel.o \
 	pg_upgrade.o \
 	relfilenumber.o \
+	segresize.o \
 	server.o \
 	tablespace.o \
 	task.o \

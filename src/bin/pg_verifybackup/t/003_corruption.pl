@@ -15,7 +15,8 @@ use Test::More;
 my $tar = $ENV{TAR};
 
 my $primary = PostgreSQL::Test::Cluster->new('primary');
-$primary->init(allows_streaming => 1);
+$primary->init(allows_streaming => 1,
+			   extra => [ "--xid=3", "--multixact-id=1", "--multixact-offset=0" ]);
 $primary->start;
 
 # Include a user-defined tablespace in the hopes of detecting problems in that
@@ -30,6 +31,7 @@ INSERT INTO x1 VALUES (111);
 CREATE TABLESPACE ts1 LOCATION '$source_ts_path';
 CREATE TABLE x2 (a int) TABLESPACE ts1;
 INSERT INTO x1 VALUES (222);
+CHECKPOINT;
 EOM
 
 my @scenario = (
@@ -49,7 +51,7 @@ my @scenario = (
 		'name' => 'missing_file',
 		'mutilate' => \&mutilate_missing_file,
 		'fails_like' =>
-		  qr/pg_xact\/0000.*present in the manifest but not (on disk|in archive "[^"]+")/
+		  qr/pg_xact\/000000000000000.*present in the manifest but not (on disk|in archive "[^"]+")/
 	},
 	{
 		'name' => 'missing_tablespace',

@@ -3729,8 +3729,8 @@ intset_node
 intvKEY
 io_callback_fn
 io_stat_col
-itemIdCompact
-itemIdCompactData
+ItemIdCompact
+ItemIdCompactData
 iterator
 jmp_buf
 join_search_hook_type

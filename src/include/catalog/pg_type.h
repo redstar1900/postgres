@@ -303,6 +303,11 @@ MAKE_SYSCACHE(TYPENAMENSP, pg_type_typname_nsp_index, 64);
 #define  TYPALIGN_SHORT			's' /* short alignment (typically 2 bytes) */
 #define  TYPALIGN_INT			'i' /* int alignment (typically 4 bytes) */
 #define  TYPALIGN_DOUBLE		'd' /* double alignment (often 8 bytes) */
+/*
+ * We need to use alignment sutable for 8-byte XID values.
+ * On system like AIX double alignment (4 bytes) is not enough.
+ */
+#define  TYPALIGN_XID			'x'
 
 #define  TYPSTORAGE_PLAIN		'p' /* type not prepared for toasting */
 #define  TYPSTORAGE_EXTERNAL	'e' /* toastable, don't try to compress */

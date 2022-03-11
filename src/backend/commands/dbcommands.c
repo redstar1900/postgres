@@ -307,6 +307,7 @@ ScanSourceDatabasePgClass(Oid tbid, Oid dbid, char *srcpath)
 		}
 
 		/* Append relevant pg_class tuples for current page to rlocatorlist. */
+		/* No toast is expected in sys tables */
 		rlocatorlist = ScanSourceDatabasePgClassPage(page, buf, tbid, dbid,
 													 srcpath, rlocatorlist,
 													 snapshot);
@@ -358,6 +359,10 @@ ScanSourceDatabasePgClassPage(Page page, Buffer buf, Oid tbid, Oid dbid,
 		tuple.t_data = (HeapTupleHeader) PageGetItem(page, itemid);
 		tuple.t_len = ItemIdGetLength(itemid);
 		tuple.t_tableOid = RelationRelationId;
+		/*
+		 * Do not need HeapTupleCopyXidsFromPage here, it is inside
+		 * HeapTupleSatisfiesVisibility.
+		 */
 
 		/* Skip tuples that are not visible to this snapshot. */
 		if (HeapTupleSatisfiesVisibility(&tuple, snapshot, buf))

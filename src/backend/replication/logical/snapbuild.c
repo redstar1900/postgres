@@ -461,7 +461,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 		elog(ERROR, "cannot build an initial slot snapshot, not all transactions are monitored anymore");
 
 	/* so we don't overwrite the existing value */
-	if (TransactionIdIsValid(MyProc->xmin))
+	if (TransactionIdIsValid(pg_atomic_read_u64(&MyProc->xmin)))
 		elog(ERROR, "cannot build an initial slot snapshot when MyProc->xmin already is valid");
 
 	snap = SnapBuildBuildSnapshot(builder);
@@ -483,7 +483,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 		elog(ERROR, "cannot build an initial slot snapshot as oldest safe xid %llu follows snapshot's xmin %llu",
 			 (unsigned long long) safeXid, (unsigned long long) snap->xmin);
 
-	MyProc->xmin = snap->xmin;
+	pg_atomic_write_u64(&MyProc->xmin, snap->xmin);
 
 	/* allocate in transaction context */
 	newxip = (TransactionId *)

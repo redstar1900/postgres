@@ -3455,8 +3455,12 @@ construct_array_builtin(Datum *elems, int nelems, Oid elmtype)
 
 		case XIDOID:
 			elmlen = sizeof(TransactionId);
+#if SIZEOF_DATUM == 8
 			elmbyval = true;
-			elmalign = TYPALIGN_INT;
+#else
+			elmbyval = false;
+#endif
+			elmalign = TYPALIGN_XID;
 			break;
 
 		default:

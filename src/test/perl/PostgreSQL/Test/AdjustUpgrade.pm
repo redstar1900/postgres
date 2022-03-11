@@ -142,6 +142,10 @@ sub adjust_database_contents
 			'drop table public.gtest_normal_child2');
 	}
 
+	# Can't upgrade xid type
+	_add_st($result, 'regression',
+		'alter table public.tab_core_types drop column xid');
+
 	# stuff not supported from release 14
 	if ($old_version < 14)
 	{

@@ -290,6 +290,8 @@ get_control_data(ClusterInfo *cluster)
 			xid.value = strtou64(p, NULL, 10);
 
 			/*
+			 * Try to read 32-bit XID format 'epoch:xid'.
+			 *
 			 * Delimiter changed from '/' to ':' in 9.6.  We don't test for
 			 * the catalog version of the change because the catalog version
 			 * is pulled from pg_controldata too, and it isn't worth adding an
@@ -305,8 +307,7 @@ get_control_data(ClusterInfo *cluster)
 			if (p == NULL)
 			{
 				/* FullTransactionId representation */
-				cluster->controldata.chkpnt_nxtxid = XidFromFullTransactionId(xid);
-				cluster->controldata.chkpnt_nxtepoch = EpochFromFullTransactionId(xid);
+				cluster->controldata.chkpnt_nxtxid = xid.value;
 			}
 			else
 			{
@@ -315,8 +316,8 @@ get_control_data(ClusterInfo *cluster)
 
 				/* Epoch:Xid representation */
 				p++;				/* remove '/' or ':' char */
-				cluster->controldata.chkpnt_nxtxid = str2uint(p);
-				cluster->controldata.chkpnt_nxtepoch = (TransactionId) XidFromFullTransactionId(xid);
+				cluster->controldata.chkpnt_nxtxid = (XidFromFullTransactionId(xid)) << 32 |
+													  (TransactionId) str2uint(p);
 			}
 
 			got_xid = true;
@@ -340,7 +341,7 @@ get_control_data(ClusterInfo *cluster)
 				pg_fatal("%d: controldata retrieval problem", __LINE__);
 
 			p++;				/* remove ':' char */
-			cluster->controldata.chkpnt_nxtmulti = str2uint(p);
+			cluster->controldata.chkpnt_nxtmulti = strtou64(p, NULL, 10);
 			got_multi = true;
 		}
 		else if ((p = strstr(bufin, "Latest checkpoint's oldestXID:")) != NULL)
@@ -351,7 +352,7 @@ get_control_data(ClusterInfo *cluster)
 				pg_fatal("%d: controldata retrieval problem", __LINE__);
 
 			p++;				/* remove ':' char */
-			cluster->controldata.chkpnt_oldstxid = str2uint(p);
+			cluster->controldata.chkpnt_oldstxid = strtou64(p, NULL, 10);
 			got_oldestxid = true;
 		}
 		else if ((p = strstr(bufin, "Latest checkpoint's oldestMultiXid:")) != NULL)
@@ -362,7 +363,7 @@ get_control_data(ClusterInfo *cluster)
 				pg_fatal("%d: controldata retrieval problem", __LINE__);
 
 			p++;				/* remove ':' char */
-			cluster->controldata.chkpnt_oldstMulti = str2uint(p);
+			cluster->controldata.chkpnt_oldstMulti = strtou64(p, NULL, 10);
 			got_oldestmulti = true;
 		}
 		else if ((p = strstr(bufin, "Latest checkpoint's NextMultiOffset:")) != NULL)
@@ -373,7 +374,7 @@ get_control_data(ClusterInfo *cluster)
 				pg_fatal("%d: controldata retrieval problem", __LINE__);
 
 			p++;				/* remove ':' char */
-			cluster->controldata.chkpnt_nxtmxoff = str2uint(p);
+			cluster->controldata.chkpnt_nxtmxoff = strtou64(p, NULL, 10);
 			got_mxoff = true;
 		}
 		else if ((p = strstr(bufin, "First log segment after reset:")) != NULL)

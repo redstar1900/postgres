@@ -86,8 +86,7 @@ StaticAssertDecl(MAX_BACKENDS * 2 <= PG_SNAPSHOT_MAX_NXIP,
  * It is an ERROR if the xid is in the future.  Otherwise, returns true if
  * the transaction is still new enough that we can determine whether it
  * committed and false otherwise.  If *extracted_xid is not NULL, it is set
- * to the low 32 bits of the transaction ID (i.e. the actual XID, without the
- * epoch).
+ * to the actual transaction ID.
  *
  * The caller must hold XactTruncationLock since it's dealing with arbitrary
  * XIDs, and must continue to hold it until it's done with any clog lookups
@@ -98,8 +97,6 @@ TransactionIdInRecentPast(FullTransactionId fxid, TransactionId *extracted_xid)
 {
 	TransactionId xid = XidFromFullTransactionId(fxid);
 	FullTransactionId now_fullxid;
-	TransactionId oldest_clog_xid;
-	FullTransactionId oldest_clog_fxid;
 
 	now_fullxid = ReadNextFullTransactionId();
 
@@ -118,7 +115,7 @@ TransactionIdInRecentPast(FullTransactionId fxid, TransactionId *extracted_xid)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("transaction ID %" PRIu64 " is in the future",
-						U64FromFullTransactionId(fxid))));
+						XidFromFullTransactionId(fxid))));
 
 	/*
 	 * TransamVariables->oldestClogXid is protected by XactTruncationLock, but
@@ -130,20 +127,13 @@ TransactionIdInRecentPast(FullTransactionId fxid, TransactionId *extracted_xid)
 	Assert(LWLockHeldByMe(XactTruncationLock));
 
 	/*
-	 * If fxid is not older than TransamVariables->oldestClogXid, the relevant
-	 * CLOG entry is guaranteed to still exist.
-	 *
-	 * TransamVariables->oldestXid governs allowable XIDs.  Usually,
-	 * oldestClogXid==oldestXid.  It's also possible for oldestClogXid to
-	 * follow oldestXid, in which case oldestXid might advance after our
-	 * ReadNextFullTransactionId() call.  If oldestXid has advanced, that
-	 * advancement reinstated the usual oldestClogXid==oldestXid.  Whether or
-	 * not that happened, oldestClogXid is allowable relative to now_fullxid.
+	 * We compare xid to TransamVariables->oldestClogXid to determine
+	 * whether the relevant CLOG entry is guaranteed to still exist.
 	 */
-	oldest_clog_xid = TransamVariables->oldestClogXid;
-	oldest_clog_fxid =
-		FullTransactionIdFromAllowableAt(now_fullxid, oldest_clog_xid);
-	return !FullTransactionIdPrecedes(fxid, oldest_clog_fxid);
+	if (TransactionIdPrecedes(xid, TransamVariables->oldestClogXid))
+		return false;
+
+	return true;
 }
 
 /*
@@ -272,12 +262,12 @@ parse_snapshot(const char *str, Node *escontext)
 	char	   *endp;
 	StringInfo	buf;
 
-	xmin = FullTransactionIdFromU64(strtou64(str, &endp, 10));
+	xmin = FullTransactionIdFromXid(strtou64(str, &endp, 10));
 	if (*endp != ':')
 		goto bad_format;
 	str = endp + 1;
 
-	xmax = FullTransactionIdFromU64(strtou64(str, &endp, 10));
+	xmax = FullTransactionIdFromXid(strtou64(str, &endp, 10));
 	if (*endp != ':')
 		goto bad_format;
 	str = endp + 1;
@@ -295,7 +285,7 @@ parse_snapshot(const char *str, Node *escontext)
 	while (*str != '\0')
 	{
 		/* read next value */
-		val = FullTransactionIdFromU64(strtou64(str, &endp, 10));
+		val = FullTransactionIdFromXid(strtou64(str, &endp, 10));
 		str = endp;
 
 		/* require the input to be in order */
@@ -373,7 +363,6 @@ pg_current_snapshot(PG_FUNCTION_ARGS)
 	uint32		nxip,
 				i;
 	Snapshot	cur;
-	FullTransactionId next_fxid = ReadNextFullTransactionId();
 
 	cur = GetActiveSnapshot();
 	if (cur == NULL)
@@ -383,18 +372,12 @@ pg_current_snapshot(PG_FUNCTION_ARGS)
 	nxip = cur->xcnt;
 	snap = palloc(PG_SNAPSHOT_SIZE(nxip));
 
-	/*
-	 * Fill.  This is the current backend's active snapshot, so MyProc->xmin
-	 * is <= all these XIDs.  As long as that remains so, oldestXid can't
-	 * advance past any of these XIDs.  Hence, these XIDs remain allowable
-	 * relative to next_fxid.
-	 */
-	snap->xmin = FullTransactionIdFromAllowableAt(next_fxid, cur->xmin);
-	snap->xmax = FullTransactionIdFromAllowableAt(next_fxid, cur->xmax);
+	/* fill */
+	snap->xmin = FullTransactionIdFromXid(cur->xmin);
+	snap->xmax = FullTransactionIdFromXid(cur->xmax);
 	snap->nxip = nxip;
 	for (i = 0; i < nxip; i++)
-		snap->xip[i] =
-			FullTransactionIdFromAllowableAt(next_fxid, cur->xip[i]);
+		snap->xip[i] = FullTransactionIdFromXid(cur->xip[i]);
 
 	/*
 	 * We want them guaranteed to be in ascending order.  This also removes
@@ -442,16 +425,16 @@ pg_snapshot_out(PG_FUNCTION_ARGS)
 	initStringInfo(&str);
 
 	appendStringInfo(&str, UINT64_FORMAT ":",
-					 U64FromFullTransactionId(snap->xmin));
+					 XidFromFullTransactionId(snap->xmin));
 	appendStringInfo(&str, UINT64_FORMAT ":",
-					 U64FromFullTransactionId(snap->xmax));
+					 XidFromFullTransactionId(snap->xmax));
 
 	for (i = 0; i < snap->nxip; i++)
 	{
 		if (i > 0)
 			appendStringInfoChar(&str, ',');
 		appendStringInfo(&str, UINT64_FORMAT,
-						 U64FromFullTransactionId(snap->xip[i]));
+						 XidFromFullTransactionId(snap->xip[i]));
 	}
 
 	PG_RETURN_CSTRING(str.data);
@@ -480,8 +463,8 @@ pg_snapshot_recv(PG_FUNCTION_ARGS)
 	if (nxip < 0 || nxip > PG_SNAPSHOT_MAX_NXIP)
 		goto bad_format;
 
-	xmin = FullTransactionIdFromU64((uint64) pq_getmsgint64(buf));
-	xmax = FullTransactionIdFromU64((uint64) pq_getmsgint64(buf));
+	xmin = FullTransactionIdFromXid((uint64) pq_getmsgint64(buf));
+	xmax = FullTransactionIdFromXid((uint64) pq_getmsgint64(buf));
 	if (!FullTransactionIdIsValid(xmin) ||
 		!FullTransactionIdIsValid(xmax) ||
 		FullTransactionIdPrecedes(xmax, xmin))
@@ -494,7 +477,7 @@ pg_snapshot_recv(PG_FUNCTION_ARGS)
 	for (i = 0; i < nxip; i++)
 	{
 		FullTransactionId cur =
-			FullTransactionIdFromU64((uint64) pq_getmsgint64(buf));
+			FullTransactionIdFromXid((uint64) pq_getmsgint64(buf));
 
 		if (FullTransactionIdPrecedes(cur, last) ||
 			FullTransactionIdPrecedes(cur, xmin) ||
@@ -539,10 +522,10 @@ pg_snapshot_send(PG_FUNCTION_ARGS)
 
 	pq_begintypsend(&buf);
 	pq_sendint32(&buf, snap->nxip);
-	pq_sendint64(&buf, (int64) U64FromFullTransactionId(snap->xmin));
-	pq_sendint64(&buf, (int64) U64FromFullTransactionId(snap->xmax));
+	pq_sendint64(&buf, (int64) XidFromFullTransactionId(snap->xmin));
+	pq_sendint64(&buf, (int64) XidFromFullTransactionId(snap->xmax));
 	for (i = 0; i < snap->nxip; i++)
-		pq_sendint64(&buf, (int64) U64FromFullTransactionId(snap->xip[i]));
+		pq_sendint64(&buf, (int64) XidFromFullTransactionId(snap->xip[i]));
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
 
@@ -630,8 +613,7 @@ pg_snapshot_xip(PG_FUNCTION_ARGS)
  * Report the status of a recent transaction ID, or null for wrapped,
  * truncated away or otherwise too old XIDs.
  *
- * The passed epoch-qualified xid is treated as a normal xid, not a
- * multixact id.
+ * The passed xid is treated as a normal xid, not a multixact id.
  *
  * If it points to a committed subxact the result is the subxact status even
  * though the parent xact may still be in progress or may have aborted.
