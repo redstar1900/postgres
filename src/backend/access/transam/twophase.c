@@ -835,8 +835,8 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 		LWLockRelease(TwoPhaseStateLock);
 
 	if (result == NULL)			/* should not happen */
-		elog(ERROR, "failed to find GlobalTransaction for xid %u",
-			 XidFromFullTransactionId(fxid));
+		elog(ERROR, "failed to find GlobalTransaction for xid %llu",
+			 (unsigned long long) XidFromFullTransactionId(fxid));
 
 	cached_fxid = fxid;
 	cached_gxact = result;
@@ -2106,9 +2106,9 @@ RecoverPreparedTransactions(void)
 			continue;
 
 		ereport(LOG,
-				(errmsg("recovering prepared transaction %u of epoch %u from shared memory",
-						XidFromFullTransactionId(gxact->fxid),
-						EpochFromFullTransactionId(gxact->fxid))));
+				(errmsg("recovering prepared transaction %llu of epoch %llu from shared memory",
+						(unsigned long long) XidFromFullTransactionId(gxact->fxid),
+						(unsigned long long) EpochFromFullTransactionId(gxact->fxid))));
 
 		hdr = (TwoPhaseFileHeader *) buf;
 		Assert(TransactionIdEquals(hdr->xid,
@@ -2258,15 +2258,15 @@ ProcessTwoPhaseBuffer(FullTransactionId fxid,
 		if (fromdisk)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("corrupted two-phase state file for transaction %u of epoch %u",
-							XidFromFullTransactionId(fxid),
-							EpochFromFullTransactionId(fxid))));
+					 errmsg("corrupted two-phase state file for transaction %llu of epoch %llu",
+							(unsigned long long) XidFromFullTransactionId(fxid),
+							(unsigned long long) EpochFromFullTransactionId(fxid))));
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("corrupted two-phase state in memory for transaction %u of epoch %u",
-							XidFromFullTransactionId(fxid),
-							EpochFromFullTransactionId(fxid))));
+					 errmsg("corrupted two-phase state in memory for transaction %llu of epoch %llu",
+							(unsigned long long) XidFromFullTransactionId(fxid),
+							(unsigned long long) EpochFromFullTransactionId(fxid))));
 	}
 
 	/*
@@ -2427,8 +2427,8 @@ RecordTransactionAbortPrepared(TransactionId xid,
 	 * RecordTransactionCommitPrepared ...
 	 */
 	if (TransactionIdDidCommit(xid))
-		elog(PANIC, "cannot abort transaction %u, it was already committed",
-			 xid);
+		elog(PANIC, "cannot abort transaction %llu, it was already committed",
+			 (unsigned long long) xid);
 
 	START_CRIT_SECTION();
 
@@ -2531,8 +2531,8 @@ PrepareRedoAdd(FullTransactionId fxid, char *buf,
 		if (access(path, F_OK) == 0)
 		{
 			ereport(reachedConsistency ? ERROR : WARNING,
-					(errmsg("could not recover two-phase state file for transaction %u",
-							hdr->xid),
+					(errmsg("could not recover two-phase state file for transaction %llu",
+							(unsigned long long) hdr->xid),
 					 errdetail("Two-phase state file has been found in WAL record %X/%08X, but this transaction has already been restored from disk.",
 							   LSN_FORMAT_ARGS(start_lsn))));
 			return;
@@ -2576,9 +2576,9 @@ PrepareRedoAdd(FullTransactionId fxid, char *buf,
 						   false /* backward */ , false /* WAL */ );
 	}
 
-	elog(DEBUG2, "added 2PC data in shared memory for transaction %u of epoch %u",
-		 XidFromFullTransactionId(gxact->fxid),
-		 EpochFromFullTransactionId(gxact->fxid));
+	elog(DEBUG2, "added 2PC data in shared memory for transaction %llu of epoch %llu",
+		 (unsigned long long) XidFromFullTransactionId(gxact->fxid),
+		 (unsigned long long) EpochFromFullTransactionId(gxact->fxid));
 }
 
 /*
@@ -2621,9 +2621,9 @@ PrepareRedoRemoveFull(FullTransactionId fxid, bool giveWarning)
 	/*
 	 * And now we can clean up any files we may have left.
 	 */
-	elog(DEBUG2, "removing 2PC data for transaction %u of epoch %u ",
-		 XidFromFullTransactionId(fxid),
-		 EpochFromFullTransactionId(fxid));
+	elog(DEBUG2, "removing 2PC data for transaction %llu of epoch %llu ",
+		 (unsigned long long) XidFromFullTransactionId(fxid),
+		 (unsigned long long) EpochFromFullTransactionId(fxid));
 
 	if (gxact->ondisk)
 		RemoveTwoPhaseFile(fxid, giveWarning);
@@ -2727,7 +2727,7 @@ TwoPhaseTransactionGid(Oid subid, TransactionId xid, char *gid_res, int szgid)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("invalid two-phase transaction ID")));
 
-	snprintf(gid_res, szgid, "pg_gid_%u_%u", subid, xid);
+	snprintf(gid_res, szgid, "pg_gid_%u_%llu", subid, (unsigned long long) xid);
 }
 
 /*
@@ -2744,7 +2744,8 @@ IsTwoPhaseTransactionGidForSubid(Oid subid, char *gid)
 	char		gid_tmp[GIDSIZE];
 
 	/* Extract the subid and xid from the given GID */
-	ret = sscanf(gid, "pg_gid_%u_%u", &subid_from_gid, &xid_from_gid);
+	ret = sscanf(gid, "pg_gid_%u_%llu", &subid_from_gid,
+				 (unsigned long long *) &xid_from_gid);
 
 	/*
 	 * Check that the given GID has expected format, and at least the subid

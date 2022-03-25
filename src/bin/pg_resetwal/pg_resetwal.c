@@ -181,7 +181,8 @@ main(int argc, char *argv[])
 					exit(1);
 				}
 				if (!TransactionIdIsNormal(set_oldest_xid))
-					pg_fatal("oldest transaction ID (-u) must be greater than or equal to %u", FirstNormalTransactionId);
+					pg_fatal("oldest transaction ID (-u) must be greater than or equal to %llu",
+							 (unsigned long long) FirstNormalTransactionId);
 				break;
 
 			case 'x':
@@ -194,7 +195,8 @@ main(int argc, char *argv[])
 					exit(1);
 				}
 				if (!TransactionIdIsNormal(set_xid))
-					pg_fatal("transaction ID (-x) must be greater than or equal to %u", FirstNormalTransactionId);
+					pg_fatal("transaction ID (-x) must be greater than or equal to %llu",
+							 (unsigned long long) FirstNormalTransactionId);
 				break;
 
 			case 'c':
@@ -216,11 +218,15 @@ main(int argc, char *argv[])
 
 				if (set_oldest_commit_ts_xid < FirstNormalTransactionId &&
 					set_oldest_commit_ts_xid != InvalidTransactionId)
-					pg_fatal("transaction ID (-c) must be either %u or greater than or equal to %u", InvalidTransactionId, FirstNormalTransactionId);
+					pg_fatal("transaction ID (-c) must be either %llu or greater than or equal to %llu",
+							 (unsigned long long) InvalidTransactionId,
+							 (unsigned long long) FirstNormalTransactionId);
 
 				if (set_newest_commit_ts_xid < FirstNormalTransactionId &&
 					set_newest_commit_ts_xid != InvalidTransactionId)
-					pg_fatal("transaction ID (-c) must be either %u or greater than or equal to %u", InvalidTransactionId, FirstNormalTransactionId);
+					pg_fatal("transaction ID (-c) must be either %llu or greater than or equal to %llu",
+							 (unsigned long long) InvalidTransactionId,
+							 (unsigned long long) FirstNormalTransactionId);
 				break;
 
 			case 'o':
@@ -752,29 +758,29 @@ PrintControlValues(bool guessed)
 		   ControlFile.checkPointCopy.ThisTimeLineID);
 	printf(_("Latest checkpoint's full_page_writes: %s\n"),
 		   ControlFile.checkPointCopy.fullPageWrites ? _("on") : _("off"));
-	printf(_("Latest checkpoint's NextXID:          %u:%u\n"),
+	printf(_("Latest checkpoint's NextXID:          %u:%llu\n"),
 		   EpochFromFullTransactionId(ControlFile.checkPointCopy.nextXid),
-		   XidFromFullTransactionId(ControlFile.checkPointCopy.nextXid));
+		   (unsigned long long) XidFromFullTransactionId(ControlFile.checkPointCopy.nextXid));
 	printf(_("Latest checkpoint's NextOID:          %u\n"),
 		   ControlFile.checkPointCopy.nextOid);
-	printf(_("Latest checkpoint's NextMultiXactId:  %u\n"),
-		   ControlFile.checkPointCopy.nextMulti);
-	printf(_("Latest checkpoint's NextMultiOffset:  %u\n"),
-		   ControlFile.checkPointCopy.nextMultiOffset);
-	printf(_("Latest checkpoint's oldestXID:        %u\n"),
-		   ControlFile.checkPointCopy.oldestXid);
+	printf(_("Latest checkpoint's NextMultiXactId:  %llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.nextMulti);
+	printf(_("Latest checkpoint's NextMultiOffset:  %llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.nextMultiOffset);
+	printf(_("Latest checkpoint's oldestXID:        %llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.oldestXid);
 	printf(_("Latest checkpoint's oldestXID's DB:   %u\n"),
 		   ControlFile.checkPointCopy.oldestXidDB);
-	printf(_("Latest checkpoint's oldestActiveXID:  %u\n"),
-		   ControlFile.checkPointCopy.oldestActiveXid);
-	printf(_("Latest checkpoint's oldestMultiXid:   %u\n"),
-		   ControlFile.checkPointCopy.oldestMulti);
+	printf(_("Latest checkpoint's oldestActiveXID:  %llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.oldestActiveXid);
+	printf(_("Latest checkpoint's oldestMultiXid:   %llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.oldestMulti);
 	printf(_("Latest checkpoint's oldestMulti's DB: %u\n"),
 		   ControlFile.checkPointCopy.oldestMultiDB);
-	printf(_("Latest checkpoint's oldestCommitTsXid:%u\n"),
-		   ControlFile.checkPointCopy.oldestCommitTsXid);
-	printf(_("Latest checkpoint's newestCommitTsXid:%u\n"),
-		   ControlFile.checkPointCopy.newestCommitTsXid);
+	printf(_("Latest checkpoint's oldestCommitTsXid:%llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.oldestCommitTsXid);
+	printf(_("Latest checkpoint's newestCommitTsXid:%llu\n"),
+		   (unsigned long long) ControlFile.checkPointCopy.newestCommitTsXid);
 	printf(_("Maximum data alignment:               %u\n"),
 		   ControlFile.maxAlign);
 	/* we don't print floatFormat since can't say much useful about it */
@@ -823,18 +829,18 @@ PrintNewControlValues(void)
 
 	if (set_mxid != 0)
 	{
-		printf(_("NextMultiXactId:                      %u\n"),
-			   ControlFile.checkPointCopy.nextMulti);
-		printf(_("OldestMultiXid:                       %u\n"),
-			   ControlFile.checkPointCopy.oldestMulti);
+		printf(_("NextMultiXactId:                      %llu\n"),
+			   (unsigned long long) ControlFile.checkPointCopy.nextMulti);
+		printf(_("OldestMultiXid:                       %llu\n"),
+			   (unsigned long long) ControlFile.checkPointCopy.oldestMulti);
 		printf(_("OldestMulti's DB:                     %u\n"),
 			   ControlFile.checkPointCopy.oldestMultiDB);
 	}
 
 	if (set_mxoff != -1)
 	{
-		printf(_("NextMultiOffset:                      %u\n"),
-			   ControlFile.checkPointCopy.nextMultiOffset);
+		printf(_("NextMultiOffset:                      %llu\n"),
+			   (unsigned long long) ControlFile.checkPointCopy.nextMultiOffset);
 	}
 
 	if (set_oid != 0)
@@ -845,10 +851,10 @@ PrintNewControlValues(void)
 
 	if (set_xid != 0)
 	{
-		printf(_("NextXID:                              %u\n"),
-			   XidFromFullTransactionId(ControlFile.checkPointCopy.nextXid));
-		printf(_("OldestXID:                            %u\n"),
-			   ControlFile.checkPointCopy.oldestXid);
+		printf(_("NextXID:                              %llu\n"),
+			   (unsigned long long) XidFromFullTransactionId(ControlFile.checkPointCopy.nextXid));
+		printf(_("OldestXID:                            %llu\n"),
+			   (unsigned long long) ControlFile.checkPointCopy.oldestXid);
 		printf(_("OldestXID's DB:                       %u\n"),
 			   ControlFile.checkPointCopy.oldestXidDB);
 	}
@@ -861,13 +867,13 @@ PrintNewControlValues(void)
 
 	if (set_oldest_commit_ts_xid != 0)
 	{
-		printf(_("oldestCommitTsXid:                    %u\n"),
-			   ControlFile.checkPointCopy.oldestCommitTsXid);
+		printf(_("oldestCommitTsXid:                    %llu\n"),
+			   (unsigned long long) ControlFile.checkPointCopy.oldestCommitTsXid);
 	}
 	if (set_newest_commit_ts_xid != 0)
 	{
-		printf(_("newestCommitTsXid:                    %u\n"),
-			   ControlFile.checkPointCopy.newestCommitTsXid);
+		printf(_("newestCommitTsXid:                    %llu\n"),
+			   (unsigned long long) ControlFile.checkPointCopy.newestCommitTsXid);
 	}
 
 	if (set_wal_segsize != 0)

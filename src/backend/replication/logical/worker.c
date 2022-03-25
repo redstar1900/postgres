@@ -4282,14 +4282,16 @@ subxact_info_add(TransactionId xid)
 static inline void
 subxact_filename(char *path, Oid subid, TransactionId xid)
 {
-	snprintf(path, MAXPGPATH, "%u-%u.subxacts", subid, xid);
+	snprintf(path, MAXPGPATH, "%u-%llu.subxacts", subid,
+			 (unsigned long long) xid);
 }
 
 /* format filename for file containing serialized changes */
 static inline void
 changes_filename(char *path, Oid subid, TransactionId xid)
 {
-	snprintf(path, MAXPGPATH, "%u-%u.changes", subid, xid);
+	snprintf(path, MAXPGPATH, "%u-%llu.changes", subid,
+			 (unsigned long long) xid);
 }
 
 /*
@@ -5044,15 +5046,15 @@ apply_error_callback(void *arg)
 					   errarg->origin_name,
 					   logicalrep_message_type(errarg->command));
 		else if (XLogRecPtrIsInvalid(errarg->finish_lsn))
-			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" in transaction %u",
+			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" in transaction %llu",
 					   errarg->origin_name,
 					   logicalrep_message_type(errarg->command),
-					   errarg->remote_xid);
+					   (unsigned long long) errarg->remote_xid);
 		else
-			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" in transaction %u, finished at %X/%08X",
+			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" in transaction %llu, finished at %X/%08X",
 					   errarg->origin_name,
 					   logicalrep_message_type(errarg->command),
-					   errarg->remote_xid,
+					   (unsigned long long) errarg->remote_xid,
 					   LSN_FORMAT_ARGS(errarg->finish_lsn));
 	}
 	else
@@ -5060,39 +5062,39 @@ apply_error_callback(void *arg)
 		if (errarg->remote_attnum < 0)
 		{
 			if (XLogRecPtrIsInvalid(errarg->finish_lsn))
-				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" in transaction %u",
+				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" in transaction %llu",
 						   errarg->origin_name,
 						   logicalrep_message_type(errarg->command),
 						   errarg->rel->remoterel.nspname,
 						   errarg->rel->remoterel.relname,
-						   errarg->remote_xid);
+						   (unsigned long long) errarg->remote_xid);
 			else
-				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" in transaction %u, finished at %X/%08X",
+				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" in transaction %llu, finished at %X/%08X",
 						   errarg->origin_name,
 						   logicalrep_message_type(errarg->command),
 						   errarg->rel->remoterel.nspname,
 						   errarg->rel->remoterel.relname,
-						   errarg->remote_xid,
+						   (unsigned long long) errarg->remote_xid,
 						   LSN_FORMAT_ARGS(errarg->finish_lsn));
 		}
 		else
 		{
 			if (XLogRecPtrIsInvalid(errarg->finish_lsn))
-				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" column \"%s\" in transaction %u",
+				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" column \"%s\" in transaction %llu",
 						   errarg->origin_name,
 						   logicalrep_message_type(errarg->command),
 						   errarg->rel->remoterel.nspname,
 						   errarg->rel->remoterel.relname,
 						   errarg->rel->remoterel.attnames[errarg->remote_attnum],
-						   errarg->remote_xid);
+						   (unsigned long long) errarg->remote_xid);
 			else
-				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" column \"%s\" in transaction %u, finished at %X/%08X",
+				errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" column \"%s\" in transaction %llu, finished at %X/%08X",
 						   errarg->origin_name,
 						   logicalrep_message_type(errarg->command),
 						   errarg->rel->remoterel.nspname,
 						   errarg->rel->remoterel.relname,
 						   errarg->rel->remoterel.attnames[errarg->remote_attnum],
-						   errarg->remote_xid,
+						   (unsigned long long) errarg->remote_xid,
 						   LSN_FORMAT_ARGS(errarg->finish_lsn));
 		}
 	}
