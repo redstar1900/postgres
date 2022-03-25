@@ -455,7 +455,7 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 
 		# Expected corruption report
 		push @expected,
-		  qr/${header}xmin $xmin precedes relation freeze threshold 0:\d+/;
+		  qr/${header}xmin $xmin precedes relation freeze threshold \d+/;
 	}
 	elsif ($offnum == 2)
 	{
@@ -466,7 +466,7 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		$tup->{t_infomask} &= ~HEAP_XMIN_INVALID;
 
 		push @expected,
-		  qr/${$header}xmin $xmin precedes oldest valid transaction ID 0:\d+/;
+		  qr/${$header}xmin $xmin precedes oldest valid transaction ID \d+/;
 	}
 	elsif ($offnum == 3)
 	{
@@ -478,7 +478,7 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		$tup->{t_infomask} &= ~HEAP_XMIN_INVALID;
 
 		push @expected,
-		  qr/${$header}xmin ${xmin} precedes oldest valid transaction ID 0:\d+/;
+		  qr/${$header}xmin ${xmin} precedes oldest valid transaction ID \d+/;
 	}
 	elsif ($offnum == 4)
 	{
@@ -488,7 +488,7 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		$tup->{t_infomask} &= ~HEAP_XMAX_INVALID;
 
 		push @expected,
-		  qr/${$header}xmax ${xmax} precedes oldest valid transaction ID 0:\d+/;
+		  qr/${$header}xmax ${xmax} precedes oldest valid transaction ID \d+/;
 	}
 	elsif ($offnum == 5)
 	{
@@ -615,7 +615,7 @@ for (my $tupidx = 0; $tupidx < $ROWCOUNT; $tupidx++)
 		$tup->{t_infomask} &= ~HEAP_XMIN_INVALID;
 
 		push @expected,
-		  qr/${$header}xmin ${xmin} equals or exceeds next valid transaction ID 0:\d+/;
+		  qr/${$header}xmin ${xmin} equals or exceeds next valid transaction ID \d+/;
 	}
 	elsif ($offnum == 17)
 	{
