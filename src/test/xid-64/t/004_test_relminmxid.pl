@@ -8,7 +8,7 @@ use bigint;
 
 my ($node, $rmm, $vacout);
 $node = PostgreSQL::Test::Cluster->new('master');
-$node->init;
+$node->init(extra => [ "--xid=3", "--multixact-id=1", "--multixact-offset=0" ]);
 $node->append_conf('postgresql.conf', 'max_prepared_transactions = 2');
 $node->start;
 

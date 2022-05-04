@@ -1907,9 +1907,19 @@ check_multixact_member_buffers(int *newval, void **extra, GucSource source)
 void
 BootStrapMultiXact(void)
 {
+	int64	pageno;
+
 	/* Zero the initial pages and flush them to disk */
 	SimpleLruZeroAndWritePage(MultiXactOffsetCtl, 0);
 	SimpleLruZeroAndWritePage(MultiXactMemberCtl, 0);
+
+	pageno = MultiXactIdToOffsetPage(MultiXactState->nextMXact);
+	if (pageno)
+		SimpleLruZeroAndWritePage(MultiXactOffsetCtl, pageno);
+
+	pageno = MXOffsetToMemberPage(MultiXactState->nextOffset);
+	if (pageno)
+		SimpleLruZeroAndWritePage(MultiXactMemberCtl, pageno);
 }
 
 /*

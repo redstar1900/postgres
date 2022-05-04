@@ -136,6 +136,10 @@ int			max_slot_wal_keep_size_mb = -1;
 int			wal_decode_buffer_size = 512 * 1024;
 bool		track_wal_io_timing = false;
 
+TransactionId		start_xid = FirstNormalTransactionId;
+MultiXactId			start_mxid = FirstMultiXactId;
+MultiXactOffset		start_mxoff = 0;
+
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
 #endif
@@ -5264,13 +5268,15 @@ BootStrapXLOG(uint32 data_checksum_version)
 	checkPoint.PrevTimeLineID = BootstrapTimeLineID;
 	checkPoint.fullPageWrites = fullPageWrites;
 	checkPoint.wal_level = wal_level;
-	checkPoint.nextXid = FullTransactionIdFromXid(FirstNormalTransactionId);
+	checkPoint.nextXid =
+		FullTransactionIdFromXid(Max(FirstNormalTransactionId,
+									 start_xid));
 	checkPoint.nextOid = FirstGenbkiObjectId;
-	checkPoint.nextMulti = FirstMultiXactId;
-	checkPoint.nextMultiOffset = 0;
-	checkPoint.oldestXid = FirstNormalTransactionId;
+	checkPoint.nextMulti = Max(FirstMultiXactId, start_mxid);
+	checkPoint.nextMultiOffset = start_mxoff;
+	checkPoint.oldestXid = XidFromFullTransactionId(checkPoint.nextXid);
 	checkPoint.oldestXidDB = Template1DbOid;
-	checkPoint.oldestMulti = FirstMultiXactId;
+	checkPoint.oldestMulti = checkPoint.nextMulti;
 	checkPoint.oldestMultiDB = Template1DbOid;
 	checkPoint.oldestCommitTsXid = InvalidTransactionId;
 	checkPoint.newestCommitTsXid = InvalidTransactionId;

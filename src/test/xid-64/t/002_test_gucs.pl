@@ -51,7 +51,7 @@ my $imoff = $START_VAL + int(rand($MAX_VAL - $START_VAL));
 
 # Initialize master node
 my $node = PostgreSQL::Test::Cluster->new('master');
-$node->init;
+$node->init(extra => [ "--xid=$ixid", "--multixact-id=$imxid", "--multixact-offset=$imoff" ]);
 # Disable logging of all statements to avoid log bloat during pgbench
 $node->append_conf('postgresql.conf', "log_statement = none");
 $node->start;

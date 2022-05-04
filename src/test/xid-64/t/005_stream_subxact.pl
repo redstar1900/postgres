@@ -77,7 +77,7 @@ sub test_streaming
 
 # Create publisher node
 my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
-$node_publisher->init(allows_streaming => 'logical');
+$node_publisher->init(allows_streaming => 'logical', extra => ['-x', '4294966545']);
 $node_publisher->append_conf('postgresql.conf',
 	'debug_logical_replication_streaming = immediate');
 $node_publisher->start;

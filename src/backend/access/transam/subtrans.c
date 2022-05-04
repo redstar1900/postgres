@@ -269,8 +269,14 @@ check_subtrans_buffers(int *newval, void **extra, GucSource source)
 void
 BootStrapSUBTRANS(void)
 {
+	int64	pageno;
+
 	/* Zero the initial page and flush it to disk */
 	SimpleLruZeroAndWritePage(SubTransCtl, 0);
+
+	pageno = TransactionIdToPage(XidFromFullTransactionId(TransamVariables->nextXid));
+	if (pageno)
+		SimpleLruZeroAndWritePage(SubTransCtl, pageno);
 }
 
 /*

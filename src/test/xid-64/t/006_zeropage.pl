@@ -17,7 +17,7 @@ sub command_output
 }
 
 my $node = PostgreSQL::Test::Cluster->new('main');
-$node->init;
+$node->init(extra => [ "--xid=3", "--multixact-id=3", "--multixact-offset=0" ]);;
 $node->start;
 my $pgdata = $node->data_dir;
 my $xlogfilename0 = $node->safe_psql('postgres',
