@@ -2138,6 +2138,9 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	Buffer		buffer;
 	Buffer		vmbuffer = InvalidBuffer;
 	bool		all_visible_cleared = false;
+	Page		page;
+	PageHeader	phdr;
+	bool		page_reinit_needed;
 
 	/* Cheap, simplistic check that the tuple matches the rel's rowtype. */
 	Assert(HeapTupleHeaderGetNatts(tup->t_data) <=
@@ -2185,13 +2188,22 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 	/* NO EREPORT(ERROR) from here till changes are logged */
 	START_CRIT_SECTION();
 
+	/*
+	 * To decide whether or not to set the XLOG_HEAP_INIT_PAGE flag, we must
+	 * first determine if the page was physically empty before placeing a tuple.
+	 */
+	page = BufferGetPage(buffer);
+	phdr = (PageHeader) page;
+	page_reinit_needed = RelationNeedsWAL(relation) &&
+							(phdr->pd_special == phdr->pd_upper);
+
 	RelationPutHeapTuple(relation, buffer, heaptup,
 						 (options & HEAP_INSERT_SPECULATIVE) != 0);
 
-	if (PageIsAllVisible(BufferGetPage(buffer)))
+	if (PageIsAllVisible(page))
 	{
 		all_visible_cleared = true;
-		PageClearAllVisible(BufferGetPage(buffer));
+		PageClearAllVisible(page);
 		visibilitymap_clear(relation,
 							ItemPointerGetBlockNumber(&(heaptup->t_self)),
 							vmbuffer, VISIBILITYMAP_VALID_BITS);
@@ -2216,7 +2228,6 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		xl_heap_insert xlrec;
 		xl_heap_header xlhdr;
 		XLogRecPtr	recptr;
-		Page		page = BufferGetPage(buffer);
 		uint8		info = XLOG_HEAP_INSERT;
 		int			bufflags = 0;
 		TransactionId	xid_base,
@@ -2235,7 +2246,8 @@ heap_insert(Relation relation, HeapTuple tup, CommandId cid,
 		 * buffer references from XLogInsert.
 		 */
 		if (ItemPointerGetOffsetNumber(&(heaptup->t_self)) == FirstOffsetNumber &&
-			PageGetMaxOffsetNumber(page) == FirstOffsetNumber)
+			PageGetMaxOffsetNumber(page) == FirstOffsetNumber &&
+			page_reinit_needed)
 		{
 			info |= XLOG_HEAP_INIT_PAGE;
 			bufflags |= REGBUF_WILL_INIT;
