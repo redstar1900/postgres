@@ -1157,8 +1157,8 @@ ExportSnapshot(Snapshot snapshot)
 	 * Generate file path for the snapshot.  We start numbering of snapshots
 	 * inside the transaction from 1.
 	 */
-	snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%016llX-%d",
-			 MyProc->vxid.procNumber, (unsigned long long) MyProc->vxid.lxid,
+	snprintf(path, sizeof(path), SNAPSHOT_EXPORT_DIR "/%08X-%016" PRIX64 "-%d",
+			 MyProc->vxid.procNumber, MyProc->vxid.lxid,
 			 list_length(exportedSnapshots) + 1);
 
 	/*
@@ -1186,15 +1186,15 @@ ExportSnapshot(Snapshot snapshot)
 	 */
 	initStringInfo(&buf);
 
-	appendStringInfo(&buf, "vxid:%d/%llu\n", MyProc->vxid.procNumber,
-					 (unsigned long long) MyProc->vxid.lxid);
+	appendStringInfo(&buf, "vxid:%d/%" PRIu64 "\n", MyProc->vxid.procNumber,
+					 MyProc->vxid.lxid);
 	appendStringInfo(&buf, "pid:%d\n", MyProcPid);
 	appendStringInfo(&buf, "dbid:%u\n", MyDatabaseId);
 	appendStringInfo(&buf, "iso:%d\n", XactIsoLevel);
 	appendStringInfo(&buf, "ro:%d\n", XactReadOnly);
 
-	appendStringInfo(&buf, "xmin:%llu\n", (unsigned long long) snapshot->xmin);
-	appendStringInfo(&buf, "xmax:%llu\n", (unsigned long long) snapshot->xmax);
+	appendStringInfo(&buf, "xmin:%" PRIu64 "\n", snapshot->xmin);
+	appendStringInfo(&buf, "xmax:%" PRIu64 "\n", snapshot->xmax);
 
 	/*
 	 * We must include our own top transaction ID in the top-xid data, since
@@ -1211,10 +1211,9 @@ ExportSnapshot(Snapshot snapshot)
 				 TransactionIdPrecedes(topXid, snapshot->xmax)) ? 1 : 0;
 	appendStringInfo(&buf, "xcnt:%d\n", snapshot->xcnt + addTopXid);
 	for (i = 0; i < snapshot->xcnt; i++)
-		appendStringInfo(&buf, "xip:%llu\n",
-						 (unsigned long long) snapshot->xip[i]);
+		appendStringInfo(&buf, "xip:%" PRIu64 "\n", snapshot->xip[i]);
 	if (addTopXid)
-		appendStringInfo(&buf, "xip:%llu\n", (unsigned long long) topXid);
+		appendStringInfo(&buf, "xip:%" PRIu64 "\n", topXid);
 
 	/*
 	 * Similarly, we add our subcommitted child XIDs to the subxid data. Here,
@@ -1228,11 +1227,9 @@ ExportSnapshot(Snapshot snapshot)
 		appendStringInfoString(&buf, "sof:0\n");
 		appendStringInfo(&buf, "sxcnt:%d\n", snapshot->subxcnt + nchildren);
 		for (i = 0; i < snapshot->subxcnt; i++)
-			appendStringInfo(&buf, "sxp:%llu\n",
-							 (unsigned long long) snapshot->subxip[i]);
+			appendStringInfo(&buf, "sxp:%" PRIu64 "\n", snapshot->subxip[i]);
 		for (i = 0; i < nchildren; i++)
-			appendStringInfo(&buf, "sxp:%llu\n",
-							 (unsigned long long) children[i]);
+			appendStringInfo(&buf, "sxp:%" PRIu64 "\n", children[i]);
 	}
 	appendStringInfo(&buf, "rec:%u\n", snapshot->takenDuringRecovery);
 
@@ -1335,7 +1332,7 @@ parseXidFromText(const char *prefix, char **s, const char *filename)
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid snapshot data in file \"%s\"", filename)));
 	ptr += prefixlen;
-	if (sscanf(ptr, "%llu", (unsigned long long *) &val) != 1)
+	if (sscanf(ptr, "%" PRIu64, &val) != 1)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid snapshot data in file \"%s\"", filename)));
@@ -1360,8 +1357,8 @@ parseVxidFromText(const char *prefix, char **s, const char *filename,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid snapshot data in file \"%s\"", filename)));
 	ptr += prefixlen;
-	if (sscanf(ptr, "%d/" "%llu", &vxid->procNumber,
-			   (unsigned long long *) &vxid->localTransactionId) != 2)
+	if (sscanf(ptr, "%d/" "%" PRIu64, &vxid->procNumber,
+			   &vxid->localTransactionId) != 2)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
 				 errmsg("invalid snapshot data in file \"%s\"", filename)));

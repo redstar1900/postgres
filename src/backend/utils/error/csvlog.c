@@ -151,12 +151,12 @@ write_csvlog(ErrorData *edata)
 	/* Virtual transaction id */
 	/* keep VXID format in sync with lockfuncs.c */
 	if (MyProc != NULL && MyProc->vxid.procNumber != INVALID_PROC_NUMBER)
-		appendStringInfo(&buf, "%d/%llu", MyProc->vxid.procNumber,
-						 (unsigned long long) MyProc->vxid.lxid);
+		appendStringInfo(&buf, "%d/%" PRIu64, MyProc->vxid.procNumber,
+						 MyProc->vxid.lxid);
 	appendStringInfoChar(&buf, ',');
 
 	/* Transaction id */
-	appendStringInfo(&buf, "%llu", (unsigned long long) GetTopTransactionIdIfAny());
+	appendStringInfo(&buf, "%" PRIu64, GetTopTransactionIdIfAny());
 	appendStringInfoChar(&buf, ',');
 
 	/* Error severity */

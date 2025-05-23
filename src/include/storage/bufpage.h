@@ -570,9 +570,8 @@ NormalTransactionIdToShort(TransactionId base, TransactionId xid, bool multi)
 		ereport(PANIC,
 				(errcode(ERRCODE_INTERNAL_ERROR),
 						errbacktrace(),
-						errmsg("xid %llu does not fit into valid range for base %llu",
-							   (unsigned long long) xid,
-							   (unsigned long long) base)));
+						errmsg("xid %" PRIu64 " does not fit into valid range for base %" PRIu64,
+							   xid, base)));
 #endif
 
 	return (ShortTransactionId) (xid - base);

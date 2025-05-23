@@ -311,7 +311,7 @@ pg_output_begin(LogicalDecodingContext *ctx, TestDecodingData *data, ReorderBuff
 {
 	OutputPluginPrepareWrite(ctx, last_write);
 	if (data->include_xids)
-		appendStringInfo(ctx->out, "BEGIN %llu", (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, "BEGIN %" PRIu64, txn->xid);
 	else
 		appendStringInfoString(ctx->out, "BEGIN");
 	OutputPluginWrite(ctx, last_write);
@@ -334,7 +334,7 @@ pg_decode_commit_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	OutputPluginPrepareWrite(ctx, true);
 	if (data->include_xids)
-		appendStringInfo(ctx->out, "COMMIT %llu", (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, "COMMIT %" PRIu64, txn->xid);
 	else
 		appendStringInfoString(ctx->out, "COMMIT");
 
@@ -387,7 +387,7 @@ pg_decode_prepare_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					 quote_literal_cstr(txn->gid));
 
 	if (data->include_xids)
-		appendStringInfo(ctx->out, ", txid %llu", (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, ", txid %" PRIu64, txn->xid);
 
 	if (data->include_timestamp)
 		appendStringInfo(ctx->out, " (at %s)",
@@ -409,7 +409,7 @@ pg_decode_commit_prepared_txn(LogicalDecodingContext *ctx, ReorderBufferTXN *txn
 					 quote_literal_cstr(txn->gid));
 
 	if (data->include_xids)
-		appendStringInfo(ctx->out, ", txid %llu", (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, ", txid %" PRIu64, txn->xid);
 
 	if (data->include_timestamp)
 		appendStringInfo(ctx->out, " (at %s)",
@@ -433,7 +433,7 @@ pg_decode_rollback_prepared_txn(LogicalDecodingContext *ctx,
 					 quote_literal_cstr(txn->gid));
 
 	if (data->include_xids)
-		appendStringInfo(ctx->out, ", txid %llu", (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, ", txid %" PRIu64, txn->xid);
 
 	if (data->include_timestamp)
 		appendStringInfo(ctx->out, " (at %s)",
@@ -795,8 +795,8 @@ pg_output_stream_start(LogicalDecodingContext *ctx, TestDecodingData *data, Reor
 	OutputPluginPrepareWrite(ctx, last_write);
 	if (data->include_xids)
 		appendStringInfo(ctx->out,
-						 "opening a streamed block for transaction TXN %llu",
-						 (unsigned long long) txn->xid);
+						 "opening a streamed block for transaction TXN %" PRIu64,
+						 txn->xid);
 	else
 		appendStringInfoString(ctx->out, "opening a streamed block for transaction");
 	OutputPluginWrite(ctx, last_write);
@@ -815,8 +815,8 @@ pg_decode_stream_stop(LogicalDecodingContext *ctx,
 	OutputPluginPrepareWrite(ctx, true);
 	if (data->include_xids)
 		appendStringInfo(ctx->out,
-						 "closing a streamed block for transaction TXN %llu",
-						 (unsigned long long) txn->xid);
+						 "closing a streamed block for transaction TXN %" PRIu64,
+						 txn->xid);
 	else
 		appendStringInfoString(ctx->out, "closing a streamed block for transaction");
 	OutputPluginWrite(ctx, true);
@@ -851,8 +851,8 @@ pg_decode_stream_abort(LogicalDecodingContext *ctx,
 	OutputPluginPrepareWrite(ctx, true);
 	if (data->include_xids)
 		appendStringInfo(ctx->out,
-						 "aborting streamed (sub)transaction TXN %llu",
-						 (unsigned long long) txn->xid);
+						 "aborting streamed (sub)transaction TXN %" PRIu64,
+						 txn->xid);
 	else
 		appendStringInfoString(ctx->out, "aborting streamed (sub)transaction");
 	OutputPluginWrite(ctx, true);
@@ -873,9 +873,9 @@ pg_decode_stream_prepare(LogicalDecodingContext *ctx,
 
 	if (data->include_xids)
 		appendStringInfo(ctx->out,
-						 "preparing streamed transaction TXN %s, txid %llu",
+						 "preparing streamed transaction TXN %s, txid %" PRIu64,
 						 quote_literal_cstr(txn->gid),
-						 (unsigned long long) txn->xid);
+						 txn->xid);
 	else
 		appendStringInfo(ctx->out, "preparing streamed transaction %s",
 						 quote_literal_cstr(txn->gid));
@@ -906,8 +906,8 @@ pg_decode_stream_commit(LogicalDecodingContext *ctx,
 
 	if (data->include_xids)
 		appendStringInfo(ctx->out,
-						 "committing streamed transaction TXN %llu",
-						 (unsigned long long) txn->xid);
+						 "committing streamed transaction TXN %" PRIu64,
+						 txn->xid);
 	else
 		appendStringInfoString(ctx->out, "committing streamed transaction");
 
@@ -941,8 +941,8 @@ pg_decode_stream_change(LogicalDecodingContext *ctx,
 
 	OutputPluginPrepareWrite(ctx, true);
 	if (data->include_xids)
-		appendStringInfo(ctx->out, "streaming change for TXN %llu",
-						 (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, "streaming change for TXN %" PRIu64,
+						 txn->xid);
 	else
 		appendStringInfoString(ctx->out, "streaming change for transaction");
 	OutputPluginWrite(ctx, true);
@@ -1008,8 +1008,8 @@ pg_decode_stream_truncate(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	OutputPluginPrepareWrite(ctx, true);
 	if (data->include_xids)
-		appendStringInfo(ctx->out, "streaming truncate for TXN %llu",
-						 (unsigned long long) txn->xid);
+		appendStringInfo(ctx->out, "streaming truncate for TXN %" PRIu64,
+						 txn->xid);
 	else
 		appendStringInfoString(ctx->out, "streaming truncate for transaction");
 	OutputPluginWrite(ctx, true);

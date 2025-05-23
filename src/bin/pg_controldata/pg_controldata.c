@@ -257,28 +257,28 @@ main(int argc, char *argv[])
 		   ControlFile->checkPointCopy.PrevTimeLineID);
 	printf(_("Latest checkpoint's full_page_writes: %s\n"),
 		   ControlFile->checkPointCopy.fullPageWrites ? _("on") : _("off"));
-	printf(_("Latest checkpoint's NextXID:          %llu\n"),
-		   (unsigned long long) XidFromFullTransactionId(ControlFile->checkPointCopy.nextXid));
+	printf(_("Latest checkpoint's NextXID:          %" PRIu64 "\n"),
+		   XidFromFullTransactionId(ControlFile->checkPointCopy.nextXid));
 	printf(_("Latest checkpoint's NextOID:          %u\n"),
 		   ControlFile->checkPointCopy.nextOid);
-	printf(_("Latest checkpoint's NextMultiXactId:  %llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.nextMulti);
-	printf(_("Latest checkpoint's NextMultiOffset:  %llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.nextMultiOffset);
-	printf(_("Latest checkpoint's oldestXID:        %llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.oldestXid);
+	printf(_("Latest checkpoint's NextMultiXactId:  %" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.nextMulti);
+	printf(_("Latest checkpoint's NextMultiOffset:  %" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.nextMultiOffset);
+	printf(_("Latest checkpoint's oldestXID:        %" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.oldestXid);
 	printf(_("Latest checkpoint's oldestXID's DB:   %u\n"),
 		   ControlFile->checkPointCopy.oldestXidDB);
-	printf(_("Latest checkpoint's oldestActiveXID:  %llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.oldestActiveXid);
-	printf(_("Latest checkpoint's oldestMultiXid:   %llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.oldestMulti);
+	printf(_("Latest checkpoint's oldestActiveXID:  %" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.oldestActiveXid);
+	printf(_("Latest checkpoint's oldestMultiXid:   %" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.oldestMulti);
 	printf(_("Latest checkpoint's oldestMulti's DB: %u\n"),
 		   ControlFile->checkPointCopy.oldestMultiDB);
-	printf(_("Latest checkpoint's oldestCommitTsXid:%llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.oldestCommitTsXid);
-	printf(_("Latest checkpoint's newestCommitTsXid:%llu\n"),
-		   (unsigned long long) ControlFile->checkPointCopy.newestCommitTsXid);
+	printf(_("Latest checkpoint's oldestCommitTsXid:%" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.oldestCommitTsXid);
+	printf(_("Latest checkpoint's newestCommitTsXid:%" PRIu64 "\n"),
+		   ControlFile->checkPointCopy.newestCommitTsXid);
 	printf(_("Time of latest checkpoint:            %s\n"),
 		   ckpttime_str);
 	printf(_("Fake LSN counter for unlogged rels:   %X/%08X\n"),

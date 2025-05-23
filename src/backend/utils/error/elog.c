@@ -3164,15 +3164,15 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 					{
 						char		strfbuf[128];
 
-						snprintf(strfbuf, sizeof(strfbuf) - 1, "%d/%llu",
+						snprintf(strfbuf, sizeof(strfbuf) - 1, "%d/%" PRIu64,
 								 MyProc->vxid.procNumber,
-								 (unsigned long long) MyProc->vxid.lxid);
+								 MyProc->vxid.lxid);
 						appendStringInfo(buf, "%*s", padding, strfbuf);
 					}
 					else
-						appendStringInfo(buf, "%d/%llu",
+						appendStringInfo(buf, "%d/%" PRIu64,
 										 MyProc->vxid.procNumber,
-										 (unsigned long long) MyProc->vxid.lxid);
+										 MyProc->vxid.lxid);
 				}
 				else if (padding != 0)
 					appendStringInfoSpaces(buf,
@@ -3180,11 +3180,11 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 				break;
 			case 'x':
 				if (padding != 0)
-					appendStringInfo(buf, "%*llu", padding,
-									 (unsigned long long) GetTopTransactionIdIfAny());
+					appendStringInfo(buf, "%*" PRIu64, padding,
+									 GetTopTransactionIdIfAny());
 				else
-					appendStringInfo(buf, "%llu",
-									 (unsigned long long) GetTopTransactionIdIfAny());
+					appendStringInfo(buf, "%" PRIu64,
+									 GetTopTransactionIdIfAny());
 				break;
 			case 'e':
 				if (padding != 0)

@@ -2568,10 +2568,8 @@ ProcessStandbyHSFeedbackMessage(void)
 		/* Copy because timestamptz_to_str returns a static buffer */
 		replyTimeStr = pstrdup(timestamptz_to_str(replyTime));
 
-		elog(DEBUG2, "hot standby feedback xmin %llu, catalog_xmin %llu reply_time %s",
-			 (unsigned long long) feedbackXmin,
-			 (unsigned long long) feedbackCatalogXmin,
-			 replyTimeStr);
+		elog(DEBUG2, "hot standby feedback xmin %" PRIu64 ", catalog_xmin %" PRIu64 " reply_time %s",
+			 feedbackXmin, feedbackCatalogXmin, replyTimeStr);
 
 		pfree(replyTimeStr);
 	}

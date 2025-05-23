@@ -1289,8 +1289,7 @@ DescribeLockTag(StringInfo buf, const LOCKTAG *tag)
 				xid = (TransactionId) tag->locktag_field2 << 32;
 				xid += tag->locktag_field1;
 
-				appendStringInfo(buf, _("transaction %llu"),
-								 (unsigned long long) xid);
+				appendStringInfo(buf, _("transaction %" PRIu64), xid);
 				break;
 			}
 		case LOCKTAG_VIRTUALTRANSACTION:

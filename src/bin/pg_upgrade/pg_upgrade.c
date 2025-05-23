@@ -798,17 +798,16 @@ copy_xact_xlog_xid(void)
 
 	prep_status("Setting oldest XID for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/pg_resetwal\" -f -u %llu \"%s\"",
-			  new_cluster.bindir,
-			  (unsigned long long) old_cluster.controldata.chkpnt_oldstxid,
+			  "\"%s/pg_resetwal\" -f -u %" PRIu64 " \"%s\"",
+			  new_cluster.bindir, old_cluster.controldata.chkpnt_oldstxid,
 			  new_cluster.pgdata);
 	check_ok();
 
 	/* set the next transaction id and epoch of the new cluster */
 	prep_status("Setting next transaction ID and epoch for new cluster");
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/pg_resetwal\" -f -x %llu \"%s\"",
-			  new_cluster.bindir, (unsigned long long) next_xid,
+			  "\"%s/pg_resetwal\" -f -x %" PRIu64 " \"%s\"",
+			  new_cluster.bindir, next_xid,
 			  new_cluster.pgdata);
 #ifdef NOT_USED
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
@@ -818,11 +817,8 @@ copy_xact_xlog_xid(void)
 #endif
 	/* must reset commit timestamp limits also */
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-			  "\"%s/pg_resetwal\" -f -c %llu,%llu \"%s\"",
-			  new_cluster.bindir,
-			  (unsigned long long) next_xid,
-			  (unsigned long long) next_xid,
-			  new_cluster.pgdata);
+			  "\"%s/pg_resetwal\" -f -c %" PRIu64 ",%" PRIu64 " \"%s\"",
+			  new_cluster.bindir, next_xid, next_xid, new_cluster.pgdata);
 	check_ok();
 
 	/*
@@ -884,11 +880,11 @@ copy_xact_xlog_xid(void)
 		 * counters here and the oldest multi present on system.
 		 */
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/pg_resetwal\" -O %llu -m %llu,%llu \"%s\"",
+				  "\"%s/pg_resetwal\" -O %" PRIu64 " -m %" PRIu64 ",%" PRIu64 " \"%s\"",
 				  new_cluster.bindir,
-				  (unsigned long long) next_mxoff,
-				  (unsigned long long) next_mxid,
-				  (unsigned long long) oldest_mxid,
+				  next_mxoff,
+				  next_mxid,
+				  oldest_mxid,
 				  new_cluster.pgdata);
 		check_ok();
 	}
@@ -912,10 +908,10 @@ copy_xact_xlog_xid(void)
 		 * next=MaxMultiXactId, but multixact.c can cope with that just fine.
 		 */
 		exec_prog(UTILITY_LOG_FILE, NULL, true, true,
-				  "\"%s/pg_resetwal\" -m %llu,%llu \"%s\"",
+				  "\"%s/pg_resetwal\" -m %" PRIu64 ",%" PRIu64 " \"%s\"",
 				  new_cluster.bindir,
-				  (unsigned long long) old_cluster.controldata.chkpnt_nxtmulti + 1,
-				  (unsigned long long) old_cluster.controldata.chkpnt_nxtmulti,
+				  old_cluster.controldata.chkpnt_nxtmulti + 1,
+				  old_cluster.controldata.chkpnt_nxtmulti,
 				  new_cluster.pgdata);
 		check_ok();
 	}
@@ -984,14 +980,14 @@ set_frozenxids(bool minmxid_only)
 		/* set pg_database.datfrozenxid */
 		PQclear(executeQueryOrDie(conn_template1,
 								  "UPDATE pg_catalog.pg_database "
-								  "SET	datfrozenxid = '%llu'",
-								  (unsigned long long) frozen_xid));
+								  "SET	datfrozenxid = '%" PRIu64 "'",
+								  frozen_xid));
 
 	/* set pg_database.datminmxid */
 	PQclear(executeQueryOrDie(conn_template1,
 							  "UPDATE pg_catalog.pg_database "
-							  "SET	datminmxid = '%llu'",
-							  (unsigned long long) minmxid));
+							  "SET	datminmxid = '%" PRIu64 "'",
+							  minmxid));
 
 	/* get database names */
 	dbres = executeQueryOrDie(conn_template1,
@@ -1025,24 +1021,24 @@ set_frozenxids(bool minmxid_only)
 			/* set pg_class.relfrozenxid */
 			PQclear(executeQueryOrDie(conn,
 									  "UPDATE	pg_catalog.pg_class "
-									  "SET	relfrozenxid = '%llu' "
+									  "SET	relfrozenxid = '%" PRIu64 "' "
 			/* only heap, materialized view, and TOAST are vacuumed */
 									  "WHERE	relkind IN ("
 									  CppAsString2(RELKIND_RELATION) ", "
 									  CppAsString2(RELKIND_MATVIEW) ", "
 									  CppAsString2(RELKIND_TOASTVALUE) ")",
-									  (unsigned long long) frozen_xid));
+									  frozen_xid));
 
 		/* set pg_class.relminmxid */
 		PQclear(executeQueryOrDie(conn,
 								  "UPDATE	pg_catalog.pg_class "
-								  "SET	relminmxid = '%llu' "
+								  "SET	relminmxid = '%" PRIu64 "' "
 		/* only heap, materialized view, and TOAST are vacuumed */
 								  "WHERE	relkind IN ("
 								  CppAsString2(RELKIND_RELATION) ", "
 								  CppAsString2(RELKIND_MATVIEW) ", "
 								  CppAsString2(RELKIND_TOASTVALUE) ")",
-								  (unsigned long long) minmxid));
+								  minmxid));
 		PQfinish(conn);
 
 		/* Reset datallowconn flag */

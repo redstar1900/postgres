@@ -1051,9 +1051,8 @@ CheckNewPage(char *msg, Page page)
 	else if (HeapPageIsDoubleXmax(page))
 		elog(INFO, "%s: page is converted into double xmax format", msg);
 	else
-		elog(ERROR, "%s: converted page has pageSpecial size %u, expected %llu",
-			 msg, size,
-			 (unsigned long long) MAXALIGN(sizeof(HeapPageSpecialData)));
+		elog(ERROR, "%s: converted page has pageSpecial size %u, expected %" PRIu64,
+			 msg, size, MAXALIGN(sizeof(HeapPageSpecialData)));
 }
 
 /*
@@ -1230,14 +1229,12 @@ xid64_test_2(PG_FUNCTION_ARGS)
 		for (i = 0; i != before.ntuples; ++i)
 		{
 			if (before.tcv[i].xmin != after.tcv[i].xmin && after.tcv[i].xmin)
-				elog(ERROR, "old and new xmin does not match (%llu != %llu)",
-					 (unsigned long long) before.tcv[i].xmin,
-					 (unsigned long long) after.tcv[i].xmin);
+				elog(ERROR, "old and new xmin does not match (%" PRIu64 " != %" PRIu64 ")",
+					 before.tcv[i].xmin, after.tcv[i].xmin);
 
 			if (before.tcv[i].xmax != after.tcv[i].xmax)
-				elog(ERROR, "old and new xmax does not match (%llu != %llu)",
-					 (unsigned long long) before.tcv[i].xmax,
-					 (unsigned long long) after.tcv[i].xmax);
+				elog(ERROR, "old and new xmax does not match (%" PRIu64 " != %" PRIu64 ")",
+					 before.tcv[i].xmax, after.tcv[i].xmax);
 		}
 
 		Assert(npages != 0);

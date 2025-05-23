@@ -1031,26 +1031,26 @@ heap_vacuum_rel(Relation rel, const VacuumParams params,
 			diff = (int64) (ReadNextTransactionId() -
 							vacrel->cutoffs.OldestXmin);
 			appendStringInfo(&buf,
-							 _("removable cutoff: %llu, which was %lld XIDs old when operation ended\n"),
-							 (unsigned long long) vacrel->cutoffs.OldestXmin,
-							 (long long) diff);
+							 _("removable cutoff: %" PRIu64 ", which was %" PRId64 " XIDs old when operation ended\n"),
+							 vacrel->cutoffs.OldestXmin,
+							 diff);
 			if (frozenxid_updated)
 			{
 				diff = (int64) (vacrel->NewRelfrozenXid -
 								vacrel->cutoffs.relfrozenxid);
 				appendStringInfo(&buf,
-								 _("new relfrozenxid: %llu, which is %lld XIDs ahead of previous value\n"),
-								 (unsigned long long) vacrel->NewRelfrozenXid,
-								 (long long) diff);
+								 _("new relfrozenxid: %" PRIu64 ", which is %" PRId64 " XIDs ahead of previous value\n"),
+								 vacrel->NewRelfrozenXid,
+								 diff);
 			}
 			if (minmulti_updated)
 			{
 				diff = (int64) (vacrel->NewRelminMxid -
 								vacrel->cutoffs.relminmxid);
 				appendStringInfo(&buf,
-								 _("new relminmxid: %llu, which is %lld MXIDs ahead of previous value\n"),
-								 (unsigned long long) vacrel->NewRelminMxid,
-								 (long long) diff);
+								 _("new relminmxid: %" PRIu64 ", which is %" PRId64 " MXIDs ahead of previous value\n"),
+								 vacrel->NewRelminMxid,
+								 diff);
 			}
 			appendStringInfo(&buf, _("frozen: %u pages from table (%.2f%% of total) had %" PRId64 " tuples frozen\n"),
 							 vacrel->new_frozen_tuple_pages,

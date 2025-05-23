@@ -1602,8 +1602,8 @@ ReportSlotInvalidation(ReplicationSlotInvalidationCause cause,
 				break;
 			}
 		case RS_INVAL_HORIZON:
-			appendStringInfo(&err_detail, _("The slot conflicted with xid horizon %llu."),
-							 (unsigned long long) snapshotConflictHorizon);
+			appendStringInfo(&err_detail, _("The slot conflicted with xid horizon %" PRIu64 "."),
+							 snapshotConflictHorizon);
 			break;
 
 		case RS_INVAL_WAL_LEVEL:

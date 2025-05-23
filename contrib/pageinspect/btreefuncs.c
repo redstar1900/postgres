@@ -145,8 +145,8 @@ GetBTPageStatistics(BlockNumber blkno, Buffer buffer, BTPageStat *stat)
 		{
 			FullTransactionId safexid = BTPageGetDeleteXid(page);
 
-			elog(DEBUG2, "deleted page from block %u has safexid %llu",
-				 blkno, (unsigned long long) XidFromFullTransactionId(safexid));
+			elog(DEBUG2, "deleted page from block %u has safexid %" PRIu64,
+				 blkno, XidFromFullTransactionId(safexid));
 		}
 		else
 		{

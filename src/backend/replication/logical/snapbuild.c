@@ -480,8 +480,8 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	LWLockRelease(ProcArrayLock);
 
 	if (TransactionIdFollows(safeXid, snap->xmin))
-		elog(ERROR, "cannot build an initial slot snapshot as oldest safe xid %llu follows snapshot's xmin %llu",
-			 (unsigned long long) safeXid, (unsigned long long) snap->xmin);
+		elog(ERROR, "cannot build an initial slot snapshot as oldest safe xid %" PRIu64 " follows snapshot's xmin %" PRIu64,
+			 safeXid, snap->xmin);
 
 	pg_atomic_write_u64(&MyProc->xmin, snap->xmin);
 
@@ -774,8 +774,8 @@ SnapBuildDistributeSnapshotAndInval(SnapBuild *builder, XLogRecPtr lsn, Transact
 		if (rbtxn_is_prepared(txn))
 			continue;
 
-		elog(DEBUG2, "adding a new snapshot and invalidations to %llu at %X/%08X",
-			 (unsigned long long) txn->xid, LSN_FORMAT_ARGS(lsn));
+		elog(DEBUG2, "adding a new snapshot and invalidations to %" PRIu64 " at %X/%08X",
+			 txn->xid, LSN_FORMAT_ARGS(lsn));
 
 		/*
 		 * increase the snapshot's refcount for the transaction we are handing
@@ -889,9 +889,9 @@ SnapBuildPurgeOlderTxn(SnapBuild *builder)
 	memcpy(builder->committed.xip, workspace,
 		   surviving_xids * sizeof(TransactionId));
 
-	elog(DEBUG3, "purged committed transactions from %u to %u, xmin: %llu, xmax: %llu",
+	elog(DEBUG3, "purged committed transactions from %u to %u, xmin: %" PRIu64 ", xmax: %" PRIu64,
 		 (uint32) builder->committed.xcnt, (uint32) surviving_xids,
-		 (unsigned long long) builder->xmin, (unsigned long long) builder->xmax);
+		 builder->xmin, builder->xmax);
 	builder->committed.xcnt = surviving_xids;
 
 	pfree(workspace);
@@ -926,10 +926,9 @@ SnapBuildPurgeOlderTxn(SnapBuild *builder)
 			builder->catchange.xip = NULL;
 		}
 
-		elog(DEBUG3, "purged catalog modifying transactions from %u to %u, xmin: %llu, xmax: %llu",
+		elog(DEBUG3, "purged catalog modifying transactions from %u to %u, xmin: %" PRIu64 ", xmax: %" PRIu64,
 			 (uint32) builder->catchange.xcnt, (uint32) surviving_xids,
-			 (unsigned long long) builder->xmin,
-			 (unsigned long long) builder->xmax);
+			 builder->xmin, builder->xmax);
 		builder->catchange.xcnt = surviving_xids;
 	}
 }
@@ -992,8 +991,8 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
 			sub_needs_timetravel = true;
 			needs_snapshot = true;
 
-			elog(DEBUG1, "found subtransaction %llu:%llu with catalog changes",
-				 (unsigned long long) xid, (unsigned long long) subxid);
+			elog(DEBUG1, "found subtransaction %" PRIu64 ":%" PRIu64 " with catalog changes",
+				 xid, subxid);
 
 			SnapBuildAddCommittedTxn(builder, subxid);
 
@@ -1018,8 +1017,8 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
 	/* if top-level modified catalog, it'll need a snapshot */
 	if (SnapBuildXidHasCatalogChanges(builder, xid, xinfo))
 	{
-		elog(DEBUG2, "found top level transaction %llu, with catalog changes",
-			 (unsigned long long) xid);
+		elog(DEBUG2, "found top level transaction %" PRIu64 ", with catalog changes",
+			 xid);
 		needs_snapshot = true;
 		needs_timetravel = true;
 		SnapBuildAddCommittedTxn(builder, xid);
@@ -1027,15 +1026,15 @@ SnapBuildCommitTxn(SnapBuild *builder, XLogRecPtr lsn, TransactionId xid,
 	else if (sub_needs_timetravel)
 	{
 		/* track toplevel txn as well, subxact alone isn't meaningful */
-		elog(DEBUG2, "forced transaction %llu to do timetravel due to one of its subtransactions",
-			 (unsigned long long) xid);
+		elog(DEBUG2, "forced transaction %" PRIu64 " to do timetravel due to one of its subtransactions",
+			 xid);
 		needs_timetravel = true;
 		SnapBuildAddCommittedTxn(builder, xid);
 	}
 	else if (needs_timetravel)
 	{
-		elog(DEBUG2, "forced transaction %llu to do timetravel",
-			 (unsigned long long) xid);
+		elog(DEBUG2, "forced transaction %" PRIu64 " to do timetravel",
+			 xid);
 
 		SnapBuildAddCommittedTxn(builder, xid);
 	}
@@ -1183,11 +1182,8 @@ SnapBuildProcessRunningXacts(SnapBuild *builder, XLogRecPtr lsn, xl_running_xact
 	xmin = ReorderBufferGetOldestXmin(builder->reorder);
 	if (xmin == InvalidTransactionId)
 		xmin = running->oldestRunningXid;
-	elog(DEBUG3, "xmin: %llu, xmax: %llu, oldest running: %llu, oldest xmin: %llu",
-		 (unsigned long long) builder->xmin,
-		 (unsigned long long) builder->xmax,
-		 (unsigned long long) running->oldestRunningXid,
-		 (unsigned long long) xmin);
+	elog(DEBUG3, "xmin: %" PRIu64 ", xmax: %" PRIu64 ", oldest running: %" PRIu64 ", oldest xmin: %" PRIu64,
+		 builder->xmin, builder->xmax, running->oldestRunningXid, xmin);
 	LogicalIncreaseXminForSlot(lsn, xmin);
 
 	/*
@@ -1278,9 +1274,9 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 		ereport(DEBUG1,
 				(errmsg_internal("skipping snapshot at %X/%08X while building logical decoding snapshot, xmin horizon too low",
 								 LSN_FORMAT_ARGS(lsn)),
-				 errdetail_internal("initial xmin horizon of %llu vs the snapshot's %llu",
-									(unsigned long long) builder->initial_xmin_horizon,
-									(unsigned long long) running->oldestRunningXid)));
+				 errdetail_internal("initial xmin horizon of %" PRIu64 " vs the snapshot's %" PRIu64,
+									builder->initial_xmin_horizon,
+									running->oldestRunningXid)));
 
 
 		SnapBuildWaitSnapshot(running, builder->initial_xmin_horizon);
@@ -1367,9 +1363,9 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 		ereport(LOG,
 				(errmsg("logical decoding found initial starting point at %X/%08X",
 						LSN_FORMAT_ARGS(lsn)),
-				 errdetail("Waiting for transactions (approximately %d) older than %llu to end.",
+				 errdetail("Waiting for transactions (approximately %d) older than %" PRIu64 " to end.",
 						   running->xcnt,
-						   (unsigned long long) running->nextXid)));
+						   running->nextXid)));
 
 		SnapBuildWaitSnapshot(running, running->nextXid);
 	}
@@ -1392,9 +1388,9 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 		ereport(LOG,
 				(errmsg("logical decoding found initial consistent point at %X/%08X",
 						LSN_FORMAT_ARGS(lsn)),
-				 errdetail("Waiting for transactions (approximately %d) older than %llu to end.",
+				 errdetail("Waiting for transactions (approximately %d) older than %" PRIu64 " to end.",
 						   running->xcnt,
-						   (unsigned long long) running->nextXid)));
+						   running->nextXid)));
 
 		SnapBuildWaitSnapshot(running, running->nextXid);
 	}

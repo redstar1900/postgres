@@ -45,7 +45,7 @@ xidout(PG_FUNCTION_ARGS)
 	TransactionId transactionId = PG_GETARG_TRANSACTIONID(0);
 	char	   *result = (char *) palloc(32);
 
-	snprintf(result, 32, "%llu", (unsigned long long) transactionId);
+	snprintf(result, 32, "%" PRIu64, transactionId);
 	PG_RETURN_CSTRING(result);
 }
 

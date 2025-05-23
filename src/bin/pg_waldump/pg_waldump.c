@@ -555,10 +555,10 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 
 	XLogRecGetLen(record, &rec_len, &fpi_len);
 
-	printf("rmgr: %-11s len (rec/tot): %6u/%6u, tx: %20llu, lsn: %X/%08X, prev %X/%08X, ",
+	printf("rmgr: %-11s len (rec/tot): %6u/%6u, tx: %20" PRIu64 ", lsn: %X/%08X, prev %X/%08X, ",
 		   desc->rm_name,
 		   rec_len, XLogRecGetTotalLen(record),
-		   (unsigned long long) XLogRecGetXid(record),
+		   XLogRecGetXid(record),
 		   LSN_FORMAT_ARGS(record->ReadRecPtr),
 		   LSN_FORMAT_ARGS(xl_prev));
 
@@ -1050,8 +1050,7 @@ main(int argc, char **argv)
 				config.filter_by_fpw = true;
 				break;
 			case 'x':
-				if (sscanf(optarg, "%llu",
-						   (unsigned long long *) &config.filter_by_xid) != 1)
+				if (sscanf(optarg, "%" PRIu64, &config.filter_by_xid) != 1)
 				{
 					pg_log_error("invalid transaction ID specification: \"%s\"",
 								 optarg);

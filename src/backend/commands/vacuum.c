@@ -1583,16 +1583,14 @@ vac_update_relstats(Relation relation,
 	if (futurexid)
 		ereport(WARNING,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg_internal("overwrote invalid relfrozenxid value %llu with new value %llu for table \"%s\"",
-								 (unsigned long long) oldfrozenxid,
-								 (unsigned long long) frozenxid,
+				 errmsg_internal("overwrote invalid relfrozenxid value %" PRIu64 " with new value %" PRIu64 " for table \"%s\"",
+								 oldfrozenxid, frozenxid,
 								 RelationGetRelationName(relation))));
 	if (futuremxid)
 		ereport(WARNING,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg_internal("overwrote invalid relminmxid value %llu with new value %llu for table \"%s\"",
-								 (unsigned long long) oldminmulti,
-								 (unsigned long long) minmulti,
+				 errmsg_internal("overwrote invalid relminmxid value %" PRIu64 " with new value %" PRIu64 " for table \"%s\"",
+								 oldminmulti, minmulti,
 								 RelationGetRelationName(relation))));
 }
 

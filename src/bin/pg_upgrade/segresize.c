@@ -76,7 +76,7 @@ slru_filename_old(const char *path, int64 segno)
 static char *
 slru_filename_new(const char *path, int64 segno)
 {
-	return psprintf("%s/%012llX", path, (long long) segno);
+	return psprintf("%s/%012" PRIX64, path, segno);
 }
 
 static inline FILE *
@@ -373,8 +373,8 @@ convert_multixact_offsets(const char *old_subdir, const char *new_subdir)
 		oldlen = read_old_segment_page(&oldseg, oldbuf, &is_empty);
 
 		if (oldlen == 0 || is_empty)
-			pg_fatal("cannot read page %lld from segment: %s\n",
-					 (long long) oldseg.pageno,
+			pg_fatal("cannot read page %" PRId64 " from segment: %s\n",
+					 oldseg.pageno,
 					 slru_filename_old(oldseg.dir, oldseg.segno));
 
 		/* Save oldest mxid offset */
@@ -501,8 +501,8 @@ convert_multixact_members(const char *old_subdir, const char *new_subdir,
 		oldlen = read_old_segment_page(&oldseg, oldbuf, &old_is_empty);
 
 		if (oldlen == 0 || old_is_empty)
-			pg_fatal("cannot read page %lld from segment: %s\n",
-					 (long long) oldseg.pageno,
+			pg_fatal("cannot read page %" PRId64 " from segment: %s\n",
+					 oldseg.pageno,
 					 slru_filename_old(oldseg.dir, oldseg.segno));
 
 		ngroups = oldlen / MULTIXACT_MEMBERGROUP_SIZE_OLD;

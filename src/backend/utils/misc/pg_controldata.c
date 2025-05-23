@@ -116,8 +116,8 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	values[5] = BoolGetDatum(ControlFile->checkPointCopy.fullPageWrites);
 	nulls[5] = false;
 
-	values[6] = CStringGetTextDatum(psprintf("%llu",
-											 (unsigned long long) XidFromFullTransactionId(ControlFile->checkPointCopy.nextXid)));
+	values[6] = CStringGetTextDatum(psprintf("%" PRIu64,
+											 XidFromFullTransactionId(ControlFile->checkPointCopy.nextXid)));
 	nulls[6] = false;
 
 	values[7] = ObjectIdGetDatum(ControlFile->checkPointCopy.nextOid);

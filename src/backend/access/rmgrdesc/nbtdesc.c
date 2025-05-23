@@ -71,8 +71,8 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_btree_delete *xlrec = (xl_btree_delete *) rec;
 
-				appendStringInfo(buf, "snapshotConflictHorizon: %llu, ndeleted: %u, nupdated: %u, isCatalogRel: %c",
-								 (unsigned long long) xlrec->snapshotConflictHorizon,
+				appendStringInfo(buf, "snapshotConflictHorizon: %" PRIu64 ", ndeleted: %u, nupdated: %u, isCatalogRel: %c",
+								 xlrec->snapshotConflictHorizon,
 								 xlrec->ndeleted, xlrec->nupdated,
 								 xlrec->isCatalogRel ? 'T' : 'F');
 
@@ -94,9 +94,9 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_btree_unlink_page *xlrec = (xl_btree_unlink_page *) rec;
 
-				appendStringInfo(buf, "left: %u, right: %u, level: %u, safexid: %llu, ",
+				appendStringInfo(buf, "left: %u, right: %u, level: %u, safexid: %" PRIu64 ", ",
 								 xlrec->leftsib, xlrec->rightsib, xlrec->level,
-								 (unsigned long long) XidFromFullTransactionId(xlrec->safexid));
+								 XidFromFullTransactionId(xlrec->safexid));
 				appendStringInfo(buf, "leafleft: %u, leafright: %u, leaftopparent: %u",
 								 xlrec->leafleftsib, xlrec->leafrightsib,
 								 xlrec->leaftopparent);
@@ -113,10 +113,10 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_btree_reuse_page *xlrec = (xl_btree_reuse_page *) rec;
 
-				appendStringInfo(buf, "rel: %u/%u/%u, snapshotConflictHorizon: %llu, isCatalogRel: %c",
+				appendStringInfo(buf, "rel: %u/%u/%u, snapshotConflictHorizon: %" PRIu64 ", isCatalogRel: %c",
 								 xlrec->locator.spcOid, xlrec->locator.dbOid,
 								 xlrec->locator.relNumber,
-								 (unsigned long long) XidFromFullTransactionId(xlrec->snapshotConflictHorizon),
+								 XidFromFullTransactionId(xlrec->snapshotConflictHorizon),
 								 xlrec->isCatalogRel ? 'T' : 'F');
 				break;
 			}

@@ -1123,9 +1123,8 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 			else
 				elog(DEBUG1,
 					 "recovery snapshot waiting for non-overflowed snapshot or "
-					 "until oldest active xid on standby is at least %llu (now %llu)",
-					 (unsigned long long) standbySnapshotPendingXmin,
-					 (unsigned long long) running->oldestRunningXid);
+					 "until oldest active xid on standby is at least %" PRIu64 " (now %" PRIu64 ")",
+					 standbySnapshotPendingXmin, running->oldestRunningXid);
 			return;
 		}
 	}
@@ -1209,8 +1208,8 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 			if (i > 0 && TransactionIdEquals(xids[i - 1], xids[i]))
 			{
 				elog(DEBUG1,
-					 "found duplicated transaction %llu for KnownAssignedXids insertion",
-					 (unsigned long long) xids[i]);
+					 "found duplicated transaction %" PRIu64 " for KnownAssignedXids insertion",
+					 xids[i]);
 				continue;
 			}
 			KnownAssignedXidsAdd(xids[i], xids[i], true);
@@ -1301,9 +1300,9 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	else
 		elog(DEBUG1,
 			 "recovery snapshot waiting for non-overflowed snapshot or "
-			 "until oldest active xid on standby is at least %llu (now %llu)",
-			 (unsigned long long) standbySnapshotPendingXmin,
-			 (unsigned long long) running->oldestRunningXid);
+			 "until oldest active xid on standby is at least %" PRIu64 " (now %" PRIu64 ")",
+			 standbySnapshotPendingXmin,
+			 running->oldestRunningXid);
 }
 
 /*
@@ -3947,8 +3946,8 @@ ProcArraySetReplicationSlotXmin(TransactionId xmin, TransactionId catalog_xmin,
 	if (!already_locked)
 		LWLockRelease(ProcArrayLock);
 
-	elog(DEBUG1, "xmin required by slots: data %llu, catalog %llu",
-		 (unsigned long long) xmin, (unsigned long long) catalog_xmin);
+	elog(DEBUG1, "xmin required by slots: data %" PRIu64 ", catalog %" PRIu64,
+		 xmin, catalog_xmin);
 }
 
 /*
@@ -4036,8 +4035,7 @@ XidCacheRemoveRunningXids(TransactionId xid,
 		 * debug warning.
 		 */
 		if (j < 0 && !MyProc->subxidStatus.overflowed)
-			elog(WARNING, "did not find subXID %llu in MyProc",
-				 (unsigned long long) anxid);
+			elog(WARNING, "did not find subXID %" PRIu64 " in MyProc", anxid);
 	}
 
 	for (j = MyProc->subxidStatus.count - 1; j >= 0; j--)
@@ -4053,8 +4051,7 @@ XidCacheRemoveRunningXids(TransactionId xid,
 	}
 	/* Ordinarily we should have found it, unless the cache has overflowed */
 	if (j < 0 && !MyProc->subxidStatus.overflowed)
-		elog(WARNING, "did not find subXID %llu in MyProc",
-			 (unsigned long long) xid);
+		elog(WARNING, "did not find subXID %" PRIu64 " in MyProc", xid);
 
 	/* Also advance global latestCompletedXid while holding the lock */
 	MaintainLatestCompletedXid(latestXid);
@@ -4363,8 +4360,8 @@ RecordKnownAssignedTransactionIds(TransactionId xid)
 	Assert(TransactionIdIsValid(xid));
 	Assert(TransactionIdIsValid(latestObservedXid));
 
-	elog(DEBUG4, "record known xact %llu latestObservedXid %llu",
-		 (unsigned long long) xid, (unsigned long long) latestObservedXid);
+	elog(DEBUG4, "record known xact %" PRIu64 " latestObservedXid %" PRIu64,
+		 xid, latestObservedXid);
 
 	/*
 	 * When a newly observed xid arrives, it is frequently the case that it is
@@ -4945,8 +4942,7 @@ KnownAssignedXidsRemove(TransactionId xid)
 {
 	Assert(TransactionIdIsValid(xid));
 
-	elog(DEBUG4, "remove KnownAssignedXid %llu",
-		 (unsigned long long) xid);
+	elog(DEBUG4, "remove KnownAssignedXid %" PRIu64, xid);
 
 	/*
 	 * Note: we cannot consider it an error to remove an XID that's not
@@ -5006,8 +5002,7 @@ KnownAssignedXidsRemovePreceding(TransactionId removeXid)
 		return;
 	}
 
-	elog(DEBUG4, "prune KnownAssignedXids to %llu",
-		 (unsigned long long) removeXid);
+	elog(DEBUG4, "prune KnownAssignedXids to %" PRIu64, removeXid);
 
 	/*
 	 * Mark entries invalid starting at the tail.  Since array is sorted, we
@@ -5193,8 +5188,7 @@ KnownAssignedXidsDisplay(int trace_level)
 		if (KnownAssignedXidsValid[i])
 		{
 			nxids++;
-			appendStringInfo(&buf, "[%d]=%llu ", i,
-							 (unsigned long long) KnownAssignedXids[i]);
+			appendStringInfo(&buf, "[%d]=%" PRIu64 " ", i, KnownAssignedXids[i]);
 		}
 	}
 

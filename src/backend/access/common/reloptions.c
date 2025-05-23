@@ -1697,10 +1697,9 @@ parse_one_reloption(relopt_value *option, char *text_str, int text_len,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 							 errmsg("value %s out of bounds for option \"%s\"",
 									value, option->gen->name),
-							 errdetail("Valid values are between \"%lld"
-									   "\" and \"%lld\".",
-									   (long long ) optint->min,
-									   (long long) optint->max)));
+							 errdetail("Valid values are between \"%" PRId64
+									   "\" and \"%" PRId64 "\".",
+									   optint->min, optint->max)));
 			}
 			break;
 		case RELOPT_TYPE_REAL:

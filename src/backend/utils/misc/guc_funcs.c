@@ -678,22 +678,22 @@ GetConfigOptionValues(struct config_generic *conf, const char **values)
 				struct config_int64 *lconf = (struct config_int64 *) conf;
 
 				/* min_val */
-				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->min);
+				snprintf(buffer, sizeof(buffer), "%" PRId64, lconf->min);
 				values[9] = pstrdup(buffer);
 
 				/* max_val */
-				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->max);
+				snprintf(buffer, sizeof(buffer), "%" PRId64, lconf->max);
 				values[10] = pstrdup(buffer);
 
 				/* enumvals */
 				values[11] = NULL;
 
 				/* boot_val */
-				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->boot_val);
+				snprintf(buffer, sizeof(buffer), "%" PRId64, lconf->boot_val);
 				values[12] = pstrdup(buffer);
 
 				/* reset_val */
-				snprintf(buffer, sizeof(buffer), "%lld", (long long) lconf->reset_val);
+				snprintf(buffer, sizeof(buffer), "%" PRId64, lconf->reset_val);
 				values[13] = pstrdup(buffer);
 			}
 			break;

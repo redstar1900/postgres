@@ -80,8 +80,7 @@ VXIDGetDatum(ProcNumber procNumber, LocalTransactionId lxid)
 	 */
 	char		vxidstr[64];
 
-	snprintf(vxidstr, sizeof(vxidstr), "%d/%llu", procNumber,
-			 (unsigned long long) lxid);
+	snprintf(vxidstr, sizeof(vxidstr), "%d/%" PRIu64, procNumber, lxid);
 
 	return CStringGetTextDatum(vxidstr);
 }

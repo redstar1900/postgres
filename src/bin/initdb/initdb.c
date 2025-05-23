@@ -1589,7 +1589,7 @@ bootstrap_template1(void)
 							  escape_quotes_bki(username));
 
 	/* relfrozenxid must not be less than FirstNormalTransactionId */
-	sprintf(buf, "%llu", (unsigned long long) Max(start_xid, 3));
+	sprintf(buf, "%" PRIu64, Max(start_xid, 3));
 	bki_lines = replace_token(bki_lines, "RECENTXMIN",
 							  buf);
 
@@ -1618,9 +1618,9 @@ bootstrap_template1(void)
 
 	printfPQExpBuffer(&cmd, "\"%s\" --boot %s %s", backend_exec, boot_options, extra_options);
 	appendPQExpBuffer(&cmd, " -X %d", wal_segment_size_mb * (1024 * 1024));
-	appendPQExpBuffer(&cmd, " -m %llu", (unsigned long long) start_mxid);
-	appendPQExpBuffer(&cmd, " -o %llu", (unsigned long long) start_mxoff);
-	appendPQExpBuffer(&cmd, " -x %llu", (unsigned long long) start_xid);
+	appendPQExpBuffer(&cmd, " -m %" PRIu64, start_mxid);
+	appendPQExpBuffer(&cmd, " -o %" PRIu64, start_mxoff);
+	appendPQExpBuffer(&cmd, " -x %" PRIu64, start_xid);
 	if (data_checksums)
 		appendPQExpBufferStr(&cmd, " -k");
 	if (debug)
@@ -3112,16 +3112,16 @@ initialize_data_directory(void)
 	setup_config();
 
 	if (start_mxid != 0)
-		printf(_("selecting initial multixact id ... %llu\n"),
-				 (unsigned long long) start_mxid);
+		printf(_("selecting initial multixact id ... %" PRIu64 "\n"),
+				 start_mxid);
 
 	if (start_mxoff != 0)
-		printf(_("selecting initial multixact offset ... %llu\n"),
-				 (unsigned long long) start_mxoff);
+		printf(_("selecting initial multixact offset ... %" PRIu64 "\n"),
+				 start_mxoff);
 
 	if (start_xid != 0)
-		printf(_("selecting initial xid ... %llu\n"),
-				 (unsigned long long) start_xid);
+		printf(_("selecting initial xid ... %" PRIu64 "\n"),
+				 start_xid);
 
 	/* Bootstrap template1 */
 	bootstrap_template1();
@@ -3141,9 +3141,9 @@ initialize_data_directory(void)
 	initPQExpBuffer(&cmd);
 	printfPQExpBuffer(&cmd, "\"%s\" %s %s",
 					  backend_exec, backend_options, extra_options);
-	appendPQExpBuffer(&cmd, " -m %llu", (unsigned long long) start_mxid);
-	appendPQExpBuffer(&cmd, " -o %llu", (unsigned long long) start_mxoff);
-	appendPQExpBuffer(&cmd, " -x %llu", (unsigned long long) start_xid);
+	appendPQExpBuffer(&cmd, " -m %" PRIu64, start_mxid);
+	appendPQExpBuffer(&cmd, " -o %" PRIu64, start_mxoff);
+	appendPQExpBuffer(&cmd, " -x %" PRIu64, start_xid);
 	appendPQExpBuffer(&cmd, " template1 >%s", DEVNULL);
 
 	PG_CMD_OPEN(cmd.data);

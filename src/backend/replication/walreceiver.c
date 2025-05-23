@@ -1212,8 +1212,8 @@ XLogWalRcvSendHSFeedback(bool immed)
 		catalog_xmin = InvalidTransactionId;
 	}
 
-	elog(DEBUG2, "sending hot standby feedback xmin %llu catalog_xmin %llu",
-		 (unsigned long long) xmin, (unsigned long long) catalog_xmin);
+	elog(DEBUG2, "sending hot standby feedback xmin %" PRIu64 " catalog_xmin %" PRIu64,
+		 xmin, catalog_xmin);
 
 	/* Construct the message and send it. */
 	resetStringInfo(&reply_message);
