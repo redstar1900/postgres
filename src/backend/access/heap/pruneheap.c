@@ -1578,6 +1578,17 @@ heap_prune_record_unchanged_lp_redirect(PruneState *prstate, OffsetNumber offnum
 	prstate->processed[offnum] = true;
 }
 
+static inline void
+clear_removed_tuple(Page page, ItemId lp)
+{
+	if (ItemIdHasStorage(lp))
+	{
+		Assert(ItemIdIsNormal(lp));		/* valid only for heap pages */
+
+		memset(PageGetItem(page, lp), 0, MAXALIGN(ItemIdGetLength(lp)));
+	}
+}
+
 /*
  * Perform the actual page changes needed by heap_page_prune_and_freeze().
  *
@@ -1660,6 +1671,10 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		Assert(HeapTupleHeaderIsHeapOnly(htup));
 #endif
 
+		/* just to be tidy  */
+		if (!repairFragmentation)
+			clear_removed_tuple(page, fromlp);
+
 		ItemIdSetRedirect(fromlp, tooff);
 	}
 
@@ -1691,6 +1706,10 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 			Assert(ItemIdIsRedirected(lp));
 		}
 #endif
+
+		/* just to be tidy  */
+		if (!repairFragmentation)
+			clear_removed_tuple(page, lp);
 
 		ItemIdSetDead(lp);
 	}
@@ -1730,6 +1749,10 @@ heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 		}
 
 #endif
+
+		/* just to be tidy  */
+		if (!repairFragmentation)
+			clear_removed_tuple(page, lp);
 
 		ItemIdSetUnused(lp);
 	}
