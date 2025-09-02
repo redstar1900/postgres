@@ -16,23 +16,46 @@ other kinds of storage managers.  Removing the switch layer would save
 nothing noticeable anyway, since storage-access operations are surely far
 more expensive than one extra layer of C function calls.
 
+<!--
+最初的伯克利 Postgres 系统中有多个存储管理器，目前只剩下“磁盘”管理器。
+（伯克利还曾有用于 Sony WORM 光盘和持久主存的管理器，但这些从未在外部发布的 Postgres 或 PostgreSQL 版本中支持过。）
+“磁盘”管理器其实名称不准确，因为它实际上支持任何操作系统提供标准文件系统操作的设备——如今几乎所有设备都适用。
+不过我们保留了存储管理器切换的概念，以便将来有人想重新引入其他类型的存储管理器。
+移除这一层并不会带来明显性能提升，因为存储访问操作本身远比多一层 C 函数调用开销大得多。
+-->
+
 In Berkeley Postgres each relation was tagged with the ID of the storage
 manager to use for it.  This is gone.  It would be probably more reasonable
 to associate storage managers with tablespaces, should we ever re-introduce
 multiple storage managers into the system catalogs.
 
+<!--
+在伯克利 Postgres 中，每个关系都带有要使用的存储管理器 ID。现在这一机制已经移除。
+如果将来重新引入多种存储管理器，更合理的做法可能是将存储管理器与表空间关联。
+-->
+
 The files in this directory, and their contents, are
 
     smgr.c	The storage manager switch dispatch code.  The routines in
-		this file call the appropriate storage manager to do storage
-		accesses requested by higher-level code.  smgr.c also manages
-		the file handle cache (SMgrRelation table).
+        this file call the appropriate storage manager to do storage
+        accesses requested by higher-level code.  smgr.c also manages
+        the file handle cache (SMgrRelation table).
 
     md.c	The "magnetic disk" storage manager, which is really just
-		an interface to the kernel's filesystem operations.
+        an interface to the kernel's filesystem operations.
 
 Note that md.c in turn relies on src/backend/storage/file/fd.c.
 
+<!--
+本目录下的文件及其内容说明：
+
+    smgr.c	存储管理器切换分发代码。该文件中的例程会调用合适的存储管理器以完成高层代码请求的存储访问。
+            smgr.c 还管理文件句柄缓存（SMgrRelation 表）。
+
+    md.c	“磁盘”存储管理器，实际上只是内核文件系统操作的接口。
+
+注意：md.c 又依赖于 src/backend/storage/file/fd.c。
+-->
 
 Relation Forks
 ==============
@@ -43,6 +66,12 @@ Free Space information in additional forks, which can be grown and truncated
 independently of the main data file, while still treating it all as a single
 physical relation in system catalogs.
 
+<!--
+自 8.4 版本起，一个 smgr 关系可以由多个物理文件组成，称为 relation fork（关系分叉）。
+这样可以将额外的元数据（如空闲空间信息）存储在额外的 fork 中，这些 fork 可以独立于主数据文件进行扩展和截断，
+但在系统目录中仍被视为单一物理关系。
+-->
+
 It is assumed that the main fork, fork number 0 or MAIN_FORKNUM, always
 exists. Fork numbers are assigned in src/include/common/relpath.h.
 Functions in smgr.c and md.c take an extra fork number argument, in addition
@@ -50,3 +79,9 @@ to relfilelocator and block number, to identify which relation fork you want to
 access. Since most code wants to access the main fork, a shortcut version of
 ReadBuffer that accesses MAIN_FORKNUM is provided in the buffer manager for
 convenience.
+
+<!--
+假定主 fork（fork 号为 0 或 MAIN_FORKNUM）总是存在。fork 号在 src/include/common/relpath.h 中分配。
+smgr.c 和 md.c 中的函数除了 relfilelocator 和 block number 外，还会多一个 fork number 参数，用于指定要访问的关系 fork。
+由于大多数代码只需要访问主 fork，缓冲管理器中提供了一个简化版的 ReadBuffer 用于直接访问 MAIN_FORKNUM。
+-->
