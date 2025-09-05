@@ -1224,21 +1224,27 @@ typedef struct CoerceViaIO
  * coercion still requires some effort: we have to fix the element type OID
  * stored in the array header.
  * ----------------
+ *
+ * ArrayCoerceExpr 表示从一种数组类型到另一种数组类型的类型转换，
+ * 实现方式是对源数组的每个元素应用 elemexpr（元素转换表达式）。
+ * 在 elemexpr 内，源元素由 CaseTestExpr 节点表示。
+ * 即使 elemexpr 是空操作（如仅 CaseTestExpr + RelabelType），
+ * 转换仍需修正数组头中的元素类型 OID。
  */
 
 typedef struct ArrayCoerceExpr
 {
-	Expr		xpr;
-	Expr	   *arg;			/* input expression (yields an array) */
-	Expr	   *elemexpr;		/* expression representing per-element work */
-	Oid			resulttype;		/* output type of coercion (an array type) */
-	/* output typmod (also element typmod) */
-	int32		resulttypmod pg_node_attr(query_jumble_ignore);
-	/* OID of collation, or InvalidOid if none */
-	Oid			resultcollid pg_node_attr(query_jumble_ignore);
-	/* how to display this node */
-	CoercionForm coerceformat pg_node_attr(query_jumble_ignore);
-	ParseLoc	location;		/* token location, or -1 if unknown */
+    Expr		xpr;
+    Expr	   *arg;			/* input expression (yields an array) 输入表达式（返回数组） */
+    Expr	   *elemexpr;		/* expression representing per-element work 元素转换表达式 */
+    Oid			resulttype;		/* output type of coercion (an array type) 强制转换后的输出类型（数组类型） */
+    /* output typmod (also element typmod) 输出类型修饰符（也是元素类型修饰符） */
+    int32		resulttypmod pg_node_attr(query_jumble_ignore);
+    /* OID of collation, or InvalidOid if none 排序规则的OID，无则为InvalidOid */
+    Oid			resultcollid pg_node_attr(query_jumble_ignore);
+    /* how to display this node 节点显示方式 */
+    CoercionForm coerceformat pg_node_attr(query_jumble_ignore);
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知则为-1 */
 } ArrayCoerceExpr;
 
 /* ----------------
@@ -1252,17 +1258,22 @@ typedef struct ArrayCoerceExpr
  * valid whole-row value of its parent table's rowtype.  Both resulttype
  * and the exposed type of "arg" must be named composite types (not domains).
  * ----------------
+ *
+ * ConvertRowtypeExpr 表示从一种复合类型到另一种复合类型的类型转换，
+ * 源类型保证包含目标类型所需的所有列（可能还有其他列），列的位置可以不同，但按名称匹配。
+ * 主要用于将继承子表的整行值转换为父表的整行类型值。
+ * resulttype 和 arg 的类型都必须是命名复合类型（不能是 domain）。
  */
 
 typedef struct ConvertRowtypeExpr
 {
-	Expr		xpr;
-	Expr	   *arg;			/* input expression */
-	Oid			resulttype;		/* output type (always a composite type) */
-	/* Like RowExpr, we deliberately omit a typmod and collation here */
-	/* how to display this node */
-	CoercionForm convertformat pg_node_attr(query_jumble_ignore);
-	ParseLoc	location;		/* token location, or -1 if unknown */
+    Expr		xpr;
+    Expr	   *arg;			/* input expression 输入表达式 */
+    Oid			resulttype;		/* output type (always a composite type) 输出类型（始终为复合类型） */
+    /* Like RowExpr, we deliberately omit a typmod and collation here */
+    /* how to display this node 节点显示方式 */
+    CoercionForm convertformat pg_node_attr(query_jumble_ignore);
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知则为-1 */
 } ConvertRowtypeExpr;
 
 /*----------
@@ -1271,13 +1282,16 @@ typedef struct ConvertRowtypeExpr
  * The planner replaces CollateExpr with RelabelType during expression
  * preprocessing, so execution never sees a CollateExpr.
  *----------
+ *
+ * CollateExpr 表示 COLLATE 操作，规划器会在表达式预处理阶段将其替换为 RelabelType，
+ * 因此执行阶段不会遇到 CollateExpr 节点。
  */
 typedef struct CollateExpr
 {
-	Expr		xpr;
-	Expr	   *arg;			/* input expression */
-	Oid			collOid;		/* collation's OID */
-	ParseLoc	location;		/* token location, or -1 if unknown */
+    Expr		xpr;
+    Expr	   *arg;			/* input expression 输入表达式 */
+    Oid			collOid;		/* collation's OID 排序规则OID */
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知则为-1 */
 } CollateExpr;
 
 /*----------
@@ -1301,13 +1315,20 @@ typedef struct CollateExpr
  * Note: we can test whether a CaseExpr has been through parse analysis
  * yet by checking whether casetype is InvalidOid or not.
  *----------
+ *
+ * CaseExpr 表示 CASE 表达式，支持两种形式：
+ *   1. CASE WHEN 条件 THEN 结果 [ ... ]
+ *   2. CASE 表达式 WHEN 比较值 THEN 结果 [ ... ]
+ * 第一种形式 arg 字段为 NULL，第二种形式 arg 字段为 testexpr。
+ * 在语法分析后，WHEN 子句的条件会被转换为 CaseTestExpr = 比较值 的布尔表达式。
+ * 可以通过 casetype 是否为 InvalidOid 判断是否经过语法分析。
  */
 typedef struct CaseExpr
 {
 	Expr		xpr;
-	/* type of expression result */
+	/* type of expression result 表达式结果类型 */
 	Oid			casetype pg_node_attr(query_jumble_ignore);
-	/* OID of collation, or InvalidOid if none */
+	/* OID of collation, or InvalidOid if none 排序规则OID，无则为InvalidOid */
 	Oid			casecollid pg_node_attr(query_jumble_ignore);
 	Expr	   *arg;			/* implicit equality comparison argument */
 	List	   *args;			/* the arguments (list of WHEN clauses) */
@@ -1317,6 +1338,7 @@ typedef struct CaseExpr
 
 /*
  * CaseWhen - one arm of a CASE expression
+ * CaseWhen 表示 CASE 表达式的一个分支（WHEN ... THEN ...）
  */
 typedef struct CaseWhen
 {
@@ -1347,14 +1369,18 @@ typedef struct CaseWhen
  *
  * The nested-assignment-expression case is safe because the only node types
  * that can be above such CaseTestExprs are FieldStore and SubscriptingRef.
+ *
+ * CaseTestExpr 是 CASE 表达式处理测试值的占位节点，类似于 Param，但实现更简单。
+ * 也用于 ArrayCoerceExpr 的当前元素值、嵌套赋值表达式（如 FieldStore、SubscriptingRef），
+ * 以及部分 SQL/JSON 表达式的中间结果。
  */
 typedef struct CaseTestExpr
 {
 	Expr		xpr;
-	Oid			typeId;			/* type for substituted value */
-	/* typemod for substituted value */
+	Oid			typeId;			/* type for substituted value 替换值类型 */
+	/* typemod for substituted value 替换值类型修饰符 */
 	int32		typeMod pg_node_attr(query_jumble_ignore);
-	/* collation for the substituted value */
+	/* collation for the substituted value 替换值排序规则 */
 	Oid			collation pg_node_attr(query_jumble_ignore);
 } CaseTestExpr;
 
@@ -1365,17 +1391,22 @@ typedef struct CaseTestExpr
  * scalar type identified by element_typeid.  If multidims is true, the
  * constituent expressions all yield arrays of element_typeid (ie, the same
  * type as array_typeid); at runtime we must check for compatible subscripts.
+ *
+ * ArrayExpr 表示 ARRAY[] 表达式。
+ * 如果 multidims 为 false，所有元素表达式都返回 element_typeid 标识的标量类型；
+ * 如果 multidims 为 true，所有元素表达式都返回 element_typeid 类型的数组（即 array_typeid 类型），
+ * 运行时需检查下标兼容性。
  */
 typedef struct ArrayExpr
 {
 	Expr		xpr;
-	/* type of expression result */
+	/* type of expression result 表达式结果类型 */
 	Oid			array_typeid pg_node_attr(query_jumble_ignore);
-	/* OID of collation, or InvalidOid if none */
+	/* OID of collation, or InvalidOid if none 排序规则OID，无则为InvalidOid */
 	Oid			array_collid pg_node_attr(query_jumble_ignore);
-	/* common type of array elements */
+	/* common type of array elements 数组元素的通用类型 */
 	Oid			element_typeid pg_node_attr(query_jumble_ignore);
-	/* the array elements or sub-arrays */
+	/* the array elements or sub-arrays 数组元素或子数组 */
 	List	   *elements;
 	/* true if elements are sub-arrays */
 	bool		multidims pg_node_attr(query_jumble_ignore);
@@ -1719,6 +1750,7 @@ typedef struct JsonConstructorExpr
 typedef enum JsonValueType
 {
 	JS_TYPE_ANY,				/* IS JSON [VALUE] */
+
 	JS_TYPE_OBJECT,				/* IS JSON OBJECT */
 	JS_TYPE_ARRAY,				/* IS JSON ARRAY */
 	JS_TYPE_SCALAR,				/* IS JSON SCALAR */
