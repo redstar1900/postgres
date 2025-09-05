@@ -1178,7 +1178,7 @@ typedef struct RelabelType
 {
     Expr		xpr;
     Expr	   *arg;			/* input expression 输入表达式 */
-    Oid			resulttype;		/* output type of coercion expression 强制转换后的输出类型 */
+    Oid			resulttype;		/* output type of coercion 强制转换后的输出类型 */
     /* output typmod (usually -1) 输出类型修饰符（通常为-1） */
     int32		resulttypmod pg_node_attr(query_jumble_ignore);
     /* OID of collation, or InvalidOid if none 排序规则的OID，无则为InvalidOid */
@@ -1195,19 +1195,22 @@ typedef struct RelabelType
  * representations are compatible, implemented by invoking the source type's
  * typoutput function then the destination type's typinput function.
  * ----------------
+ *
+ * CoerceViaIO 表示在两个文本表示兼容的数据类型之间进行类型转换，
+ * 具体实现是先调用源类型的 typoutput 函数，再调用目标类型的 typinput 函数完成转换。
  */
 
 typedef struct CoerceViaIO
 {
-	Expr		xpr;
-	Expr	   *arg;			/* input expression */
-	Oid			resulttype;		/* output type of coercion */
-	/* output typmod is not stored, but is presumed -1 */
-	/* OID of collation, or InvalidOid if none */
-	Oid			resultcollid pg_node_attr(query_jumble_ignore);
-	/* how to display this node */
-	CoercionForm coerceformat pg_node_attr(query_jumble_ignore);
-	ParseLoc	location;		/* token location, or -1 if unknown */
+    Expr		xpr;
+    Expr	   *arg;			/* input expression 输入表达式 */
+    Oid			resulttype;		/* output type of coercion 强制转换后的输出类型 */
+    /* output typmod is not stored, but is presumed -1 输出类型修饰符未存储，假定为-1 */
+    /* OID of collation, or InvalidOid if none 排序规则的OID，无则为InvalidOid */
+    Oid			resultcollid pg_node_attr(query_jumble_ignore);
+    /* how to display this node 节点显示方式 */
+    CoercionForm coerceformat pg_node_attr(query_jumble_ignore);
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知时为-1 */
 } CoerceViaIO;
 
 /* ----------------
@@ -1823,6 +1826,8 @@ typedef struct JsonExpr
 
 	/* jsonpath-valued expression containing the query pattern */
 	Node	   *path_spec;
+
+
 
 	/* Expected type/format of the output. */
 	JsonReturning *returning;
