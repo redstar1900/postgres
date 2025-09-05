@@ -113,131 +113,177 @@ typedef uint64 AclMode;			/* a bitmask of privilege bits */
  *	  significant (such as alias names), as is ignored anything that can
  *	  be deduced from child nodes (else we'd just be double-hashing that
  *	  piece of information).
+ *
+ * Query结构体用于解析分析，将所有语句转换为Query树，供重写器和优化器进一步处理。
+ * 非可优化语句（如部分DDL）会设置utilityStmt字段，其余字段多为占位。
+ * 计划阶段会将Query树转换为以PlannedStmt节点为首的Plan树，Query结构体不会被执行器使用。
+ * 被query jumbling忽略的字段（如别名）在语义上不重要，或可由子节点推导出，避免重复哈希。
  */
 typedef struct Query
 {
-	NodeTag		type;
+    NodeTag		type;
 
-	CmdType		commandType;	/* select|insert|update|delete|merge|utility */
+    CmdType		commandType;	/* select|insert|update|delete|merge|utility */
+    // 命令类型：SELECT、INSERT、UPDATE、DELETE、MERGE或UTILITY
 
-	/* where did I come from? */
-	QuerySource querySource pg_node_attr(query_jumble_ignore);
+    /* where did I come from? */
+    QuerySource querySource pg_node_attr(query_jumble_ignore);
+    // 查询来源（如原始语句、规则等）
 
-	/*
-	 * query identifier (can be set by plugins); ignored for equal, as it
-	 * might not be set; also not stored.  This is the result of the query
-	 * jumble, hence ignored.
-	 */
-	uint64		queryId pg_node_attr(equal_ignore, query_jumble_ignore, read_write_ignore, read_as(0));
+    /*
+     * query identifier (can be set by plugins); ignored for equal, as it
+     * might not be set; also not stored.  This is the result of the query
+     * jumble, hence ignored.
+     */
+    uint64		queryId pg_node_attr(equal_ignore, query_jumble_ignore, read_write_ignore, read_as(0));
+    // 查询唯一标识符（可由插件设置，通常用于查询哈希）
 
-	/* do I set the command result tag? */
-	bool		canSetTag pg_node_attr(query_jumble_ignore);
+    /* do I set the command result tag? */
+    bool		canSetTag pg_node_attr(query_jumble_ignore);
+    // 是否设置命令结果标签
 
-	Node	   *utilityStmt;	/* non-null if commandType == CMD_UTILITY */
+    Node	   *utilityStmt;	/* non-null if commandType == CMD_UTILITY */
+    // 非优化语句的原始语法树
 
-	/*
-	 * rtable index of target relation for INSERT/UPDATE/DELETE/MERGE; 0 for
-	 * SELECT.  This is ignored in the query jumble as unrelated to the
-	 * compilation of the query ID.
-	 */
-	int			resultRelation pg_node_attr(query_jumble_ignore);
+    /*
+     * rtable index of target relation for INSERT/UPDATE/DELETE/MERGE; 0 for
+     * SELECT.  This is ignored in the query jumble as unrelated to the
+     * compilation of the query ID.
+     */
+    int			resultRelation pg_node_attr(query_jumble_ignore);
+    // 目标关系在rtable中的索引（DML语句有效，SELECT为0）
 
-	/* has aggregates in tlist or havingQual */
-	bool		hasAggs pg_node_attr(query_jumble_ignore);
-	/* has window functions in tlist */
-	bool		hasWindowFuncs pg_node_attr(query_jumble_ignore);
-	/* has set-returning functions in tlist */
-	bool		hasTargetSRFs pg_node_attr(query_jumble_ignore);
-	/* has subquery SubLink */
-	bool		hasSubLinks pg_node_attr(query_jumble_ignore);
-	/* distinctClause is from DISTINCT ON */
-	bool		hasDistinctOn pg_node_attr(query_jumble_ignore);
-	/* WITH RECURSIVE was specified */
-	bool		hasRecursive pg_node_attr(query_jumble_ignore);
-	/* has INSERT/UPDATE/DELETE/MERGE in WITH */
-	bool		hasModifyingCTE pg_node_attr(query_jumble_ignore);
-	/* FOR [KEY] UPDATE/SHARE was specified */
-	bool		hasForUpdate pg_node_attr(query_jumble_ignore);
-	/* rewriter has applied some RLS policy */
-	bool		hasRowSecurity pg_node_attr(query_jumble_ignore);
-	/* is a RETURN statement */
-	bool		isReturn pg_node_attr(query_jumble_ignore);
+    /* has aggregates in tlist or havingQual */
+    bool		hasAggs pg_node_attr(query_jumble_ignore);
+    // 是否包含聚合函数
+    /* has window functions in tlist */
+    bool		hasWindowFuncs pg_node_attr(query_jumble_ignore);
+    // 是否包含窗口函数
+    /* has set-returning functions in tlist */
+    bool		hasTargetSRFs pg_node_attr(query_jumble_ignore);
+    // 是否包含集合返回函数
+    /* has subquery SubLink */
+    bool		hasSubLinks pg_node_attr(query_jumble_ignore);
+    // 是否包含子查询
+    /* distinctClause is from DISTINCT ON */
+    bool		hasDistinctOn pg_node_attr(query_jumble_ignore);
+    // 是否使用DISTINCT ON
+    /* WITH RECURSIVE was specified */
+    bool		hasRecursive pg_node_attr(query_jumble_ignore);
+    // 是否指定WITH RECURSIVE
+    /* has INSERT/UPDATE/DELETE/MERGE in WITH */
+    bool		hasModifyingCTE pg_node_attr(query_jumble_ignore);
+    // WITH子句中是否包含DML
+    /* FOR [KEY] UPDATE/SHARE was specified */
+    bool		hasForUpdate pg_node_attr(query_jumble_ignore);
+    // 是否指定FOR UPDATE/SHARE
+    /* rewriter has applied some RLS policy */
+    bool		hasRowSecurity pg_node_attr(query_jumble_ignore);
+    // 是否应用了行级安全策略
+    /* is a RETURN statement */
+    bool		isReturn pg_node_attr(query_jumble_ignore);
+    // 是否为RETURN语句
 
-	List	   *cteList;		/* WITH list (of CommonTableExpr's) */
+    List	   *cteList;		/* WITH list (of CommonTableExpr's) */
+    // WITH子句列表
 
-	List	   *rtable;			/* list of range table entries */
+    List	   *rtable;			/* list of range table entries */
+    // 范围表（FROM子句的表项列表）
 
-	/*
-	 * list of RTEPermissionInfo nodes for the rtable entries having
-	 * perminfoindex > 0
-	 */
-	List	   *rteperminfos pg_node_attr(query_jumble_ignore);
-	FromExpr   *jointree;		/* table join tree (FROM and WHERE clauses);
-								 * also USING clause for MERGE */
+    /*
+     * list of RTEPermissionInfo nodes for the rtable entries having
+     * perminfoindex > 0
+     */
+    List	   *rteperminfos pg_node_attr(query_jumble_ignore);
+    // 范围表权限信息列表
 
-	List	   *mergeActionList;	/* list of actions for MERGE (only) */
+    FromExpr   *jointree;		/* table join tree (FROM and WHERE clauses);
+                                 * also USING clause for MERGE */
+    // 表连接树（FROM和WHERE子句，以及MERGE的USING子句）
 
-	/*
-	 * rtable index of target relation for MERGE to pull data. Initially, this
-	 * is the same as resultRelation, but after query rewriting, if the target
-	 * relation is a trigger-updatable view, this is the index of the expanded
-	 * view subquery, whereas resultRelation is the index of the target view.
-	 */
-	int			mergeTargetRelation pg_node_attr(query_jumble_ignore);
+    List	   *mergeActionList;	/* list of actions for MERGE (only) */
+    // MERGE语句的动作列表
 
-	/* join condition between source and target for MERGE */
-	Node	   *mergeJoinCondition;
+    /*
+     * rtable index of target relation for MERGE to pull data. Initially, this
+     * is the same as resultRelation, but after query rewriting, if the target
+     * relation is a trigger-updatable view, this is the index of the expanded
+     * view subquery, whereas resultRelation is the index of the target view.
+     */
+    int			mergeTargetRelation pg_node_attr(query_jumble_ignore);
+    // MERGE拉取数据的目标关系索引
 
-	List	   *targetList;		/* target list (of TargetEntry) */
+    /* join condition between source and target for MERGE */
+    Node	   *mergeJoinCondition;
+    // MERGE源表与目标表的连接条件
 
-	/* OVERRIDING clause */
-	OverridingKind override pg_node_attr(query_jumble_ignore);
+    List	   *targetList;		/* target list (of TargetEntry) */
+    // 目标列列表
 
-	OnConflictExpr *onConflict; /* ON CONFLICT DO [NOTHING | UPDATE] */
+    /* OVERRIDING clause */
+    OverridingKind override pg_node_attr(query_jumble_ignore);
+    // OVERRIDING子句类型
 
-	List	   *returningList;	/* return-values list (of TargetEntry) */
+    OnConflictExpr *onConflict; /* ON CONFLICT DO [NOTHING | UPDATE] */
+    // ON CONFLICT子句表达式
 
-	List	   *groupClause;	/* a list of SortGroupClause's */
-	bool		groupDistinct;	/* is the group by clause distinct? */
+    List	   *returningList;	/* return-values list (of TargetEntry) */
+    // RETURNING返回值列表
 
-	List	   *groupingSets;	/* a list of GroupingSet's if present */
+    List	   *groupClause;	/* a list of SortGroupClause's */
+    bool		groupDistinct;	/* is the group by clause distinct? */
+    // GROUP BY子句及是否DISTINCT
 
-	Node	   *havingQual;		/* qualifications applied to groups */
+    List	   *groupingSets;	/* a list of GroupingSet's if present */
+    // GROUPING SETS列表
 
-	List	   *windowClause;	/* a list of WindowClause's */
+    Node	   *havingQual;		/* qualifications applied to groups */
+    // HAVING条件
 
-	List	   *distinctClause; /* a list of SortGroupClause's */
+    List	   *windowClause;	/* a list of WindowClause's */
+    // 窗口子句列表
 
-	List	   *sortClause;		/* a list of SortGroupClause's */
+    List	   *distinctClause; /* a list of SortGroupClause's */
+    // DISTINCT子句列表
 
-	Node	   *limitOffset;	/* # of result tuples to skip (int8 expr) */
-	Node	   *limitCount;		/* # of result tuples to return (int8 expr) */
-	LimitOption limitOption;	/* limit type */
+    List	   *sortClause;		/* a list of SortGroupClause's */
+    // 排序子句列表
 
-	List	   *rowMarks;		/* a list of RowMarkClause's */
+    Node	   *limitOffset;	/* # of result tuples to skip (int8 expr) */
+    Node	   *limitCount;		/* # of result tuples to return (int8 expr) */
+    LimitOption limitOption;	/* limit type */
+    // LIMIT/OFFSET相关
 
-	Node	   *setOperations;	/* set-operation tree if this is top level of
-								 * a UNION/INTERSECT/EXCEPT query */
+    List	   *rowMarks;		/* a list of RowMarkClause's */
+    // 行标记子句列表
 
-	/*
-	 * A list of pg_constraint OIDs that the query depends on to be
-	 * semantically valid
-	 */
-	List	   *constraintDeps pg_node_attr(query_jumble_ignore);
+    Node	   *setOperations;	/* set-operation tree if this is top level of
+                                 * a UNION/INTERSECT/EXCEPT query */
+    // 集合操作树（如UNION/INTERSECT/EXCEPT）
 
-	/* a list of WithCheckOption's (added during rewrite) */
-	List	   *withCheckOptions pg_node_attr(query_jumble_ignore);
+    /*
+     * A list of pg_constraint OIDs that the query depends on to be
+     * semantically valid
+     */
+    List	   *constraintDeps pg_node_attr(query_jumble_ignore);
+    // 查询依赖的约束OID列表
 
-	/*
-	 * The following two fields identify the portion of the source text string
-	 * containing this query.  They are typically only populated in top-level
-	 * Queries, not in sub-queries.  When not set, they might both be zero, or
-	 * both be -1 meaning "unknown".
-	 */
-	/* start location, or -1 if unknown */
-	ParseLoc	stmt_location;
-	/* length in bytes; 0 means "rest of string" */
-	ParseLoc	stmt_len pg_node_attr(query_jumble_ignore);
+    /* a list of WithCheckOption's (added during rewrite) */
+    List	   *withCheckOptions pg_node_attr(query_jumble_ignore);
+    // WITH CHECK OPTION列表
+
+    /*
+     * The following two fields identify the portion of the source text string
+     * containing this query.  They are typically only populated in top-level
+     * Queries, not in sub-queries.  When not set, they might both be zero, or
+     * both be -1 meaning "unknown".
+     */
+    /* start location, or -1 if unknown */
+    ParseLoc	stmt_location;
+    // 查询在原始SQL文本中的起始位置
+    /* length in bytes; 0 means "rest of string" */
+    ParseLoc	stmt_len pg_node_attr(query_jumble_ignore);
+    // 查询在原始SQL文本中的长度（字节）
 } Query;
 
 
@@ -1569,6 +1615,7 @@ typedef struct WindowClause
  * identified as a FOR [KEY] UPDATE/SHARE target.  If one of these clauses
  * is applied to a subquery, we generate RowMarkClauses for all normal and
  * subquery rels in the subquery, but they are marked pushedDown = true to
+
  * distinguish them from clauses that were explicitly written at this query
  * level.  Also, Query.hasForUpdate tells whether there were explicit FOR
  * UPDATE/SHARE/KEY SHARE clauses in the current query level.
@@ -2441,7 +2488,7 @@ typedef struct AlterTableCmd	/* one subcommand of an ALTER TABLE */
 
 
 /* ----------------------
- * Alter Collation
+ *	Alter Collation
  * ----------------------
  */
 typedef struct AlterCollationStmt
@@ -2530,8 +2577,7 @@ typedef struct ObjectWithArgs
 	bool		args_unspecified;	/* argument list was omitted? */
 } ObjectWithArgs;
 
-/*
- * An access privilege, with optional list of column names
+/* An access privilege, with optional list of column names
  * priv_name == NULL denotes ALL PRIVILEGES (only used with a column list)
  * cols == NIL denotes "all columns"
  * Note that simple "ALL PRIVILEGES" is represented as a NIL list, not
@@ -2900,7 +2946,7 @@ typedef struct CreateForeignTableStmt
 } CreateForeignTableStmt;
 
 /* ----------------------
- *		Create/Drop USER MAPPING Statements
+ *		Create/Alter USER MAPPING Statements
  * ----------------------
  */
 
@@ -2916,52 +2962,6 @@ typedef struct CreateUserMappingStmt
 typedef struct AlterUserMappingStmt
 {
 	NodeTag		type;
-	RoleSpec   *user;			/* user role */
-	char	   *servername;		/* server name */
-	List	   *options;		/* generic options to server */
-} AlterUserMappingStmt;
-
-typedef struct DropUserMappingStmt
-{
-	NodeTag		type;
-	RoleSpec   *user;			/* user role */
-	char	   *servername;		/* server name */
-	bool		missing_ok;		/* ignore missing mappings */
-} DropUserMappingStmt;
-
-/* ----------------------
- *		Import Foreign Schema Statement
- * ----------------------
- */
-
-typedef enum ImportForeignSchemaType
-{
-	FDW_IMPORT_SCHEMA_ALL,		/* all relations wanted */
-	FDW_IMPORT_SCHEMA_LIMIT_TO, /* include only listed tables in import */
-	FDW_IMPORT_SCHEMA_EXCEPT,	/* exclude listed tables from import */
-} ImportForeignSchemaType;
-
-typedef struct ImportForeignSchemaStmt
-{
-	NodeTag		type;
-	char	   *server_name;	/* FDW server name */
-	char	   *remote_schema;	/* remote schema name to query */
-	char	   *local_schema;	/* local schema to create objects in */
-	ImportForeignSchemaType list_type;	/* type of table list */
-	List	   *table_list;		/* List of RangeVar */
-	List	   *options;		/* list of options to pass to FDW */
-} ImportForeignSchemaStmt;
-
-/*----------------------
- *		Create POLICY Statement
- *----------------------
- */
-typedef struct CreatePolicyStmt
-{
-	NodeTag		type;
-	char	   *policy_name;	/* Policy's name */
-	RangeVar   *table;			/* the table name the policy applies to */
-	char	   *cmd_name;		/* the command name the policy applies to */
 	bool		permissive;		/* restrictive or permissive policy */
 	List	   *roles;			/* the roles associated with the policy */
 	Node	   *qual;			/* the policy's condition */

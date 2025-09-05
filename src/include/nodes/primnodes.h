@@ -563,7 +563,7 @@ typedef struct GroupingFunc
 typedef struct WindowFunc
 {
 	Expr		xpr;
-	/* pg_proc Oid of the function */
+	/* pg_proc OID of the function */
 	Oid			winfnoid;
 	/* type Oid of result of the window function */
 	Oid			wintype pg_node_attr(query_jumble_ignore);
@@ -982,15 +982,6 @@ typedef struct BoolExpr
  *
  * In EXISTS, EXPR, MULTIEXPR, and ARRAY SubLinks, testexpr and operName
  * are unused and are always null.
- *
- * subLinkId is currently used only for MULTIEXPR SubLinks, and is zero in
- * other SubLinks.  This number identifies different multiple-assignment
- * subqueries within an UPDATE statement's SET list.  It is unique only
- * within a particular targetlist.  The output column(s) of the MULTIEXPR
- * are referenced by PARAM_MULTIEXPR Params appearing elsewhere in the tlist.
- *
- * The CTE_SUBLINK case never occurs in actual SubLink nodes, but it is used
- * in SubPlans generated for WITH subqueries.
  */
 typedef enum SubLinkType
 {
@@ -1176,20 +1167,25 @@ typedef struct FieldStore
  * with just overwriting the type field of the input expression node,
  * so we need a separate node to show the coercion's result type.)
  * ----------------
+ *
+ * RelabelType 表示在两个二进制兼容的数据类型之间进行“虚拟”类型转换，
+ * 例如将 OID 表达式的结果重新解释为 int4。该节点在运行时不会有实际操作，
+ * 主要用于在类型解析过程中存储表达式结果应赋予的正确类型。
+ * （不能直接覆盖输入表达式节点的类型字段，因此需要单独的节点来表示转换后的结果类型。）
  */
 
 typedef struct RelabelType
 {
-	Expr		xpr;
-	Expr	   *arg;			/* input expression */
-	Oid			resulttype;		/* output type of coercion expression */
-	/* output typmod (usually -1) */
-	int32		resulttypmod pg_node_attr(query_jumble_ignore);
-	/* OID of collation, or InvalidOid if none */
-	Oid			resultcollid pg_node_attr(query_jumble_ignore);
-	/* how to display this node */
-	CoercionForm relabelformat pg_node_attr(query_jumble_ignore);
-	ParseLoc	location;		/* token location, or -1 if unknown */
+    Expr		xpr;
+    Expr	   *arg;			/* input expression 输入表达式 */
+    Oid			resulttype;		/* output type of coercion expression 强制转换后的输出类型 */
+    /* output typmod (usually -1) 输出类型修饰符（通常为-1） */
+    int32		resulttypmod pg_node_attr(query_jumble_ignore);
+    /* OID of collation, or InvalidOid if none 排序规则的OID，无则为InvalidOid */
+    Oid			resultcollid pg_node_attr(query_jumble_ignore);
+    /* how to display this node 节点显示方式 */
+    CoercionForm relabelformat pg_node_attr(query_jumble_ignore);
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知时为-1 */
 } RelabelType;
 
 /* ----------------
