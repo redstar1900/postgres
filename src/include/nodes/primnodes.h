@@ -1185,7 +1185,7 @@ typedef struct RelabelType
     Oid			resultcollid pg_node_attr(query_jumble_ignore);
     /* how to display this node 节点显示方式 */
     CoercionForm relabelformat pg_node_attr(query_jumble_ignore);
-    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知时为-1 */
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知则为-1 */
 } RelabelType;
 
 /* ----------------
@@ -1751,6 +1751,7 @@ typedef enum JsonValueType
 {
 	JS_TYPE_ANY,				/* IS JSON [VALUE] */
 
+
 	JS_TYPE_OBJECT,				/* IS JSON OBJECT */
 	JS_TYPE_ARRAY,				/* IS JSON ARRAY */
 	JS_TYPE_SCALAR,				/* IS JSON SCALAR */
@@ -2054,19 +2055,24 @@ typedef struct MergeAction
  * checked will be determined.  If the value passes, it is returned as the
  * result; if not, an error is raised.  Note that this is equivalent to
  * RelabelType in the scenario where no constraints are applied.
+ *
+ * CoerceToDomain 表示将一个值强制转换为域类型的操作。
+ * 在运行时（而不是之前）会确定需要检查的约束集合。
+ * 如果值通过约束检查，则作为结果返回，否则抛出错误。
+ * 如果没有约束，则与 RelabelType 等价。
  */
 typedef struct CoerceToDomain
 {
-	Expr		xpr;
-	Expr	   *arg;			/* input expression */
-	Oid			resulttype;		/* domain type ID (result type) */
-	/* output typmod (currently always -1) */
-	int32		resulttypmod pg_node_attr(query_jumble_ignore);
-	/* OID of collation, or InvalidOid if none */
-	Oid			resultcollid pg_node_attr(query_jumble_ignore);
-	/* how to display this node */
-	CoercionForm coercionformat pg_node_attr(query_jumble_ignore);
-	ParseLoc	location;		/* token location, or -1 if unknown */
+    Expr		xpr;
+    Expr	   *arg;			/* input expression 输入表达式 */
+    Oid			resulttype;		/* domain type ID (result type) 域类型ID（结果类型） */
+    /* output typmod (currently always -1) 输出类型修饰符（当前总为-1） */
+    int32		resulttypmod pg_node_attr(query_jumble_ignore);
+    /* OID of collation, or InvalidOid if none 排序规则OID，无则为InvalidOid */
+    Oid			resultcollid pg_node_attr(query_jumble_ignore);
+    /* how to display this node 节点显示方式 */
+    CoercionForm coercionformat pg_node_attr(query_jumble_ignore);
+    ParseLoc	location;		/* token location, or -1 if unknown 令牌位置，未知则为-1 */
 } CoerceToDomain;
 
 /*
@@ -2077,17 +2083,20 @@ typedef struct CoerceToDomain
  * Note: the typeId/typeMod/collation will be set from the domain's base type,
  * not the domain itself.  This is because we shouldn't consider the value
  * to be a member of the domain if we haven't yet checked its constraints.
+ *
+ * CoerceToDomainValue 是用于域约束检查的值占位节点，类似于 Param，但实现更简单。
+ * 注意：typeId/typeMod/collation 来自域的基础类型，而不是域本身，因为在未检查约束前不应视为域成员。
  */
 typedef struct CoerceToDomainValue
 {
 	Expr		xpr;
-	/* type for substituted value */
+	/* type for substituted value 替换值类型 */
 	Oid			typeId;
-	/* typemod for substituted value */
+	/* typemod for substituted value 替换值类型修饰符 */
 	int32		typeMod pg_node_attr(query_jumble_ignore);
-	/* collation for the substituted value */
+	/* collation for the substituted value 替换值排序规则 */
 	Oid			collation pg_node_attr(query_jumble_ignore);
-	/* token location, or -1 if unknown */
+	/* token location, or -1 if unknown 令牌位置，未知则为-1 */
 	ParseLoc	location;
 } CoerceToDomainValue;
 
@@ -2097,18 +2106,21 @@ typedef struct CoerceToDomainValue
  * This is not an executable expression: it must be replaced by the actual
  * column default expression during rewriting.  But it is convenient to
  * treat it as an expression node during parsing and rewriting.
+ *
+ * SetToDefault 是 INSERT 或 UPDATE 命令中 DEFAULT 标记的占位节点。
+ * 不是可执行表达式，重写时会被实际的列默认表达式替换，但在解析和重写阶段作为表达式节点处理很方便。
  */
 typedef struct SetToDefault
 {
-	Expr		xpr;
-	/* type for substituted value */
-	Oid			typeId;
-	/* typemod for substituted value */
-	int32		typeMod pg_node_attr(query_jumble_ignore);
-	/* collation for the substituted value */
-	Oid			collation pg_node_attr(query_jumble_ignore);
-	/* token location, or -1 if unknown */
-	ParseLoc	location;
+    Expr		xpr;
+    /* type for substituted value 替换值类型 */
+    Oid			typeId;
+    /* typemod for substituted value 替换值类型修饰符 */
+    int32		typeMod pg_node_attr(query_jumble_ignore);
+    /* collation for the substituted value 替换值排序规则 */
+    Oid			collation pg_node_attr(query_jumble_ignore);
+    /* token location, or -1 if unknown 令牌位置，未知则为-1 */
+    ParseLoc	location;
 } SetToDefault;
 
 /*
@@ -2123,13 +2135,17 @@ typedef struct SetToDefault
  * The referenced cursor can be represented either as a hardwired string
  * or as a reference to a run-time parameter of type REFCURSOR.  The latter
  * case is for the convenience of plpgsql.
+ *
+ * CurrentOfExpr 表示 [WHERE] CURRENT OF cursor_name 的节点。
+ * 类似于 Var，包含目标关系的 rangetable 索引，便于规划阶段定位表达式。
+ * 被引用的游标可以是字符串或运行时参数（REFCURSOR），后者便于 plpgsql 使用。
  */
 typedef struct CurrentOfExpr
 {
-	Expr		xpr;
-	Index		cvarno;			/* RT index of target relation */
-	char	   *cursor_name;	/* name of referenced cursor, or NULL */
-	int			cursor_param;	/* refcursor parameter number, or 0 */
+    Expr		xpr;
+    Index		cvarno;			/* RT index of target relation 目标关系的RT索引 */
+    char	   *cursor_name;	/* name of referenced cursor, or NULL 被引用游标名或NULL */
+    int			cursor_param;	/* refcursor parameter number, or 0 REFCURSOR参数编号或0 */
 } CurrentOfExpr;
 
 /*
@@ -2138,12 +2154,15 @@ typedef struct CurrentOfExpr
  * This has the same effect as calling the nextval() function, but it does not
  * check permissions on the sequence.  This is used for identity columns,
  * where the sequence is an implicit dependency without its own permissions.
+ *
+ * NextValueExpr 表示从序列获取下一个值，与 nextval() 效果相同，但不检查权限。
+ * 用于标识列，序列作为隐式依赖，无需单独权限。
  */
 typedef struct NextValueExpr
 {
-	Expr		xpr;
-	Oid			seqid;
-	Oid			typeId;
+    Expr		xpr;
+    Oid			seqid;			/* 序列OID */
+    Oid			typeId;			/* 返回值类型OID */
 } NextValueExpr;
 
 /*
@@ -2152,13 +2171,16 @@ typedef struct NextValueExpr
  * This mostly matches the structure of IndexElems, but having a dedicated
  * primnode allows for a clean separation between the use of index parameters
  * by utility commands, and this node.
+ *
+ * InferenceElem 表示唯一索引推断规范的一个元素。
+ * 结构与 IndexElems 类似，但单独节点便于区分工具命令和索引参数的使用。
  */
 typedef struct InferenceElem
 {
-	Expr		xpr;
-	Node	   *expr;			/* expression to infer from, or NULL */
-	Oid			infercollid;	/* OID of collation, or InvalidOid */
-	Oid			inferopclass;	/* OID of att opclass, or InvalidOid */
+    Expr		xpr;
+    Node	   *expr;			/* expression to infer from, or NULL 用于推断的表达式或NULL */
+    Oid			infercollid;	/* OID of collation, or InvalidOid 排序规则OID或InvalidOid */
+    Oid			inferopclass;	/* OID of att opclass, or InvalidOid 操作类OID或InvalidOid */
 } InferenceElem;
 
 /*--------------------
@@ -2214,24 +2236,27 @@ typedef struct InferenceElem
  * must have resnos that cannot duplicate any regular column's resno.  Also
  * note that there are places that assume resjunk columns come after non-junk
  * columns.
- *--------------------
+ *
+ * TargetEntry 表示查询目标列表中的一个条目。
+ * SELECT 时，resno 为序号；INSERT/UPDATE 时，resno 为目标列号，可能有缺失或乱序。
+ * resname 用于前端显示列名，resjunk 表示工作列（如排序键），最终输出时会被移除。
  */
 typedef struct TargetEntry
 {
 	Expr		xpr;
-	/* expression to evaluate */
+	/* expression to evaluate 要计算的表达式 */
 	Expr	   *expr;
-	/* attribute number (see notes above) */
+	/* attribute number (see notes above) 属性编号（见上文说明） */
 	AttrNumber	resno;
-	/* name of the column (could be NULL) */
+	/* name of the column (could be NULL) 列名（可为NULL） */
 	char	   *resname pg_node_attr(query_jumble_ignore);
-	/* nonzero if referenced by a sort/group clause */
+	/* nonzero if referenced by a sort/group clause 被排序/分组子句引用时非零 */
 	Index		ressortgroupref;
-	/* OID of column's source table */
+	/* OID of column's source table 源表的OID */
 	Oid			resorigtbl pg_node_attr(query_jumble_ignore);
-	/* column's number in source table */
+	/* column's number in source table 源表中的列号 */
 	AttrNumber	resorigcol pg_node_attr(query_jumble_ignore);
-	/* set to true to eliminate the attribute from final target list */
+	/* set to true to eliminate the attribute from final target list 是否为工作列（需移除） */
 	bool		resjunk pg_node_attr(query_jumble_ignore);
 } TargetEntry;
 
