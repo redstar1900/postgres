@@ -1,27 +1,40 @@
 This directory contains a general purpose data structures, for use anywhere
 in the backend:
 
+-- 本目录包含后端任意位置可用的通用数据结构。
+
 binaryheap.c - a binary heap
+-- 二叉堆实现
 
 bipartite_match.c - Hopcroft-Karp maximum cardinality algorithm for bipartite graphs
+-- 二分图最大匹配的 Hopcroft-Karp 算法实现
 
 bloomfilter.c - probabilistic, space-efficient set membership testing
+-- 布隆过滤器，概率型、空间高效的集合成员测试
 
 dshash.c - concurrent hash tables backed by dynamic shared memory areas
+-- 基于动态共享内存区的并发哈希表
 
 hyperloglog.c - a streaming cardinality estimator
+-- HyperLogLog，流式基数估计算法
 
 ilist.c - single and double-linked lists
+-- 单链表和双链表实现
 
 integerset.c - a data structure for holding large set of integers
+-- 用于存储大量整数的集合结构
 
 knapsack.c - knapsack problem solver
+-- 背包问题求解器
 
 pairingheap.c - a pairing heap
+-- 配对堆实现
 
 rbtree.c - a red-black tree
+-- 红黑树实现
 
 stringinfo.c - an extensible string type
+-- 可扩展字符串类型
 
 
 Aside from the inherent characteristics of the data structures, there are a
@@ -31,5 +44,9 @@ allocated size. The pairing heap on the other hand has no inherent maximum
 size, but the caller needs to allocate each element being stored in the heap,
 while the binary heap works with plain Datums or pointers.
 
+-- 除了数据结构本身的特性，二叉堆和配对堆在实际使用上有一些区别：
+-- 二叉堆在创建时分配全部空间，不能扩展；配对堆没有最大容量限制，但每个元素需由调用者分配，二叉堆则直接存储 Datum 或指针。
+
 The linked-lists in ilist.c can be embedded directly into other structs, as
 opposed to the List interface in nodes/pg_list.h.
+-- ilist.c 的链表可以直接嵌入到其他结构体中，而 nodes/pg_list.h 的 List 接口则不行。
