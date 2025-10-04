@@ -3,6 +3,9 @@ src/backend/utils/resowner/README
 Notes About Resource Owners
 ===========================
 
+资源拥有者相关说明
+====================
+
 ResourceOwner objects are a concept invented to simplify management of
 query-related resources, such as buffer pins and table locks.  These
 resources need to be tracked in a reliable way to ensure that they will
@@ -11,21 +14,34 @@ Rather than expecting the entire executor to have bulletproof data
 structures, we localize the tracking of such resources into a single
 module.
 
+ResourceOwner 对象是为简化查询相关资源（如缓冲区钉住和表锁）管理而设计的概念。
+这些资源需要可靠地跟踪，以确保在查询结束时能够释放，即使查询因错误失败。
+与其让整个执行器都具备健壮的数据结构，不如将这些资源的跟踪集中到一个模块中。
+
 The design of the ResourceOwner API is modeled on our MemoryContext API,
 which has proven very flexible and successful in preventing memory leaks.
 In particular we allow ResourceOwners to have child ResourceOwner objects
 so that there can be forests of the things; releasing a parent
 ResourceOwner acts on all its direct and indirect children as well.
 
+ResourceOwner API 的设计借鉴了 MemoryContext API，后者在防止内存泄漏方面非常灵活且有效。
+特别地，我们允许 ResourceOwner 拥有子 ResourceOwner 对象，因此可以形成树状结构；释放父 ResourceOwner 时会同时作用于其所有直接和间接子对象。
+
 (It is tempting to consider unifying ResourceOwners and MemoryContexts
 into a single object type, but their usage patterns are sufficiently
 different that this is probably not really a helpful thing to do.)
+
+（虽然有将 ResourceOwner 和 MemoryContext 合并为单一对象类型的想法，但它们的使用模式差异较大，实际上并不合适。）
 
 We create a ResourceOwner for each transaction or subtransaction as
 well as one for each Portal.  During execution of a Portal, the global
 variable CurrentResourceOwner points to the Portal's ResourceOwner.
 This causes operations such as ReadBuffer and LockAcquire to record
 ownership of the acquired resources in that ResourceOwner object.
+
+每个事务或子事务都会创建一个 ResourceOwner，每个 Portal 也会有一个。
+在 Portal 执行期间，全局变量 CurrentResourceOwner 指向该 Portal 的 ResourceOwner。
+这使得 ReadBuffer 和 LockAcquire 等操作会将获得的资源归属记录到该 ResourceOwner 对象中。
 
 When a Portal is closed, any remaining resources (typically only locks)
 become the responsibility of the current transaction.  This is represented
@@ -34,15 +50,27 @@ ResourceOwner.  resowner.c automatically transfers the resources to the
 parent object when releasing the child.  Similarly, subtransaction
 ResourceOwners are children of their immediate parent.
 
+当 Portal 关闭时，任何剩余资源（通常只有锁）都归当前事务负责。
+这通过将 Portal 的 ResourceOwner 设为当前事务 ResourceOwner 的子对象来实现。
+resowner.c 在释放子对象时会自动将资源转移到父对象。
+同理，子事务的 ResourceOwner 也是其直接父事务的子对象。
+
 We need transaction-related ResourceOwners as well as Portal-related ones
 because transactions may initiate operations that require resources (such
 as query parsing) when no associated Portal exists yet.
 
+我们需要事务相关的 ResourceOwner，也需要 Portal 相关的 ResourceOwner，
+因为事务可能会在尚未存在关联 Portal 时发起需要资源的操作（如查询解析）。
 
 Usage
 -----
 
+基本操作
+-----
+
 The basic operations on a ResourceOwner are:
+
+对 ResourceOwner 的基本操作包括：
 
 * create a ResourceOwner
 
@@ -54,11 +82,24 @@ The basic operations on a ResourceOwner are:
 * delete a ResourceOwner (including child owner objects); all resources
   must have been released beforehand
 
+创建 ResourceOwner
+
+将某些资源与 ResourceOwner 关联或解除关联
+
+释放 ResourceOwner 的资产（释放所有拥有的资源，但不包括
+拥有者对象本身）
+
+删除 ResourceOwner（包括子拥有者对象）；所有资源
+必须事先被释放
+
 Locks are handled specially because in non-error situations a lock should
 be held until end of transaction, even if it was originally taken by a
 subtransaction or portal.  Therefore, the "release" operation on a child
 ResourceOwner transfers lock ownership to the parent instead of actually
 releasing the lock, if isCommit is true.
+
+锁的处理是特殊的，因为在非错误情况下，锁应该被持有直到事务结束，即使它最初是由子事务或 Portal 获取的。
+因此，如果 isCommit 为真，则子 ResourceOwner 上的“释放”操作会将锁的所有权转移给父级，而不是实际释放锁。
 
 Whenever we are inside a transaction, the global variable
 CurrentResourceOwner shows which resource owner should be assigned
@@ -67,21 +108,38 @@ is NULL when not inside any transaction (or when inside a failed
 transaction).  In this case it is not valid to acquire query-lifespan
 resources.
 
+每当我们在一个事务中时，全局变量 CurrentResourceOwner 显示哪个资源拥有者应该被分配为获得的资源负责。
+但是请注意，当不在任何事务中时（或在失败的事务中时），CurrentResourceOwner 为 NULL。
+在这种情况下，获取查询生命周期资源是无效的。
+
 When unpinning a buffer or releasing a lock or cache reference,
 CurrentResourceOwner must point to the same resource owner that was current
 when the buffer, lock, or cache reference was acquired.  It would be possible
 to relax this restriction given additional bookkeeping effort, but at present
 there seems no need.
 
+在取消缓冲区固定、释放锁或缓存引用时，
+CurrentResourceOwner 必须指向获取缓冲区、锁或缓存引用时的相同资源拥有者。
+考虑到额外的簿记工作，放宽此限制是可能的，但目前似乎没有必要。
+
 Adding a new resource type
 --------------------------
+
+添加新资源类型
+----------------
 
 ResourceOwner can track ownership of many different kinds of resources.  In
 core PostgreSQL it is used for buffer pins, lmgr locks, and catalog cache
 references, to name a few examples.
 
+ResourceOwner 可以跟踪许多不同类型资源的拥有权。
+在 PostgreSQL 核心中，它用于缓冲区钉住、lmgr 锁和目录缓存引用等。
+
 To add a new kind of resource, define a ResourceOwnerDesc to describe it.
 For example:
+
+要添加一种新类型的资源，定义一个 ResourceOwnerDesc 来描述它。
+例如：
 
 static const ResourceOwnerDesc myresource_desc = {
 	.name = "My fancy resource",
@@ -97,6 +155,9 @@ of the Datum depends on the resource type.  Most resource types use it to
 store a pointer to some struct, but it can also be a file descriptor or
 library handle, for example.
 
+ResourceOwnerRemember() 和 ResourceOwnerForget() 函数接受指向该结构的指针，以及一个 Datum 来表示资源。
+Datum 的含义取决于资源类型。大多数资源类型使用它来存储指向某个结构的指针，但它也可以是文件描述符或库句柄，例如。
+
 The ReleaseResource callback is called when a resource owner is released or
 deleted.  It should release any resources (e.g. close files, free memory)
 associated with the resource.  Because the callback is called during
@@ -104,10 +165,18 @@ transaction abort, it must perform only low-level cleanup with no user
 visible effects.  The callback should not perform operations that could
 fail, like allocate memory.
 
+当资源拥有者被释放或删除时，会调用 ReleaseResource 回调。
+它应该释放与资源相关的任何资源（例如关闭文件、释放内存）。
+因为回调是在事务中止期间被调用的，所以它只能执行低级清理，而不产生任何用户可见的效果。
+回调不应执行可能失败的操作，例如分配内存。
+
 The optional DebugPrint callback is used in the warning at transaction
 commit, if any resources are leaked.  If not specified, a generic
 implementation that prints the resource name and the resource as a pointer
 is used.
+
+可选的 DebugPrint 回调用于事务提交时的警告，如果有资源泄漏的话。
+如果未指定，则使用通用实现，该实现将资源名称和资源作为指针打印出来。
 
 There is another API for other modules to get control during ResourceOwner
 release, so that they can scan their own data structures to find the objects
@@ -116,11 +185,20 @@ This used to be the only way for extensions to use the resource owner
 mechanism with new kinds of objects; nowadays it is easier to define a custom
 ResourceOwnerDesc struct.
 
+还有另一个 API 供其他模块在 ResourceOwner 释放期间获取控制权，
+以便它们可以扫描自己的数据结构以查找需要删除的对象。
+请参见 RegisterResourceReleaseCallback 函数。
+这曾经是扩展使用资源拥有者机制处理新类型对象的唯一方法；如今，定义自定义 ResourceOwnerDesc 结构更为简单。
 
 Releasing
 ---------
 
+释放资源
+---------
+
 Releasing the resources of a ResourceOwner happens in three phases:
+
+释放 ResourceOwner 资源分为三个阶段：
 
 1. "Before-locks" resources
 
@@ -128,16 +206,28 @@ Releasing the resources of a ResourceOwner happens in three phases:
 
 3. "After-locks" resources
 
-Each resource type specifies whether it needs to be released before or after
-locks.  Each resource type also has a priority, which determines the order
-that the resources are released in.  Note that the phases are performed fully
-for the whole tree of resource owners, before moving to the next phase, but
-the priority within each phase only determines the order within that
-ResourceOwner.  Child resource owners are always handled before the parent,
-within each phase.
+每个资源类型指定它是在锁之前还是之后释放。
+每个资源类型还有一个优先级，决定了资源释放的顺序。
+注意，整个资源拥有者树的所有阶段都是完全执行的，
+但每个阶段内的优先级仅决定了在该 ResourceOwner 内部的顺序。
+在每个阶段内，子资源拥有者总是在父资源拥有者之前处理。
+
+1. “锁前”资源
+
+2. 锁
+
+3. “锁后”资源
+
+每个资源类型指定它是在锁之前还是之后释放。
+每个资源类型还有一个优先级，决定了资源释放的顺序。
+注意，整个资源拥有者树的所有阶段都是完全执行的，
+但每个阶段内的优先级仅决定了在该 ResourceOwner 内部的顺序。
+在每个阶段内，子资源拥有者总是在父资源拥有者之前处理。
 
 For example, imagine that you have two ResourceOwners, parent and child,
 as follows:
+
+例如，假设你有两个 ResourceOwner，父级和子级，如下所示：
 
 Parent
   parent resource BEFORE_LOCKS priority 1
@@ -150,7 +240,20 @@ Parent
     child resource AFTER_LOCKS priority 10001
     child resource AFTER_LOCKS priority 10002
 
+父级
+  父资源 锁前 优先级 1
+  父资源 锁前 优先级 2
+  父资源 锁后 优先级 10001
+  父资源 锁后 优先级 10002
+  子级
+    子资源 锁前 优先级 1
+    子资源 锁前 优先级 2
+    子资源 锁后 优先级 10001
+    子资源 锁后 优先级 10002
+
 These resources would be released in the following order:
+
+这些资源将按以下顺序释放：
 
 child resource BEFORE_LOCKS priority 1
 child resource BEFORE_LOCKS priority 2
@@ -162,6 +265,16 @@ child resource AFTER_LOCKS priority 10002
 parent resource AFTER_LOCKS priority 10001
 parent resource AFTER_LOCKS priority 10002
 
+子资源 锁前 优先级 1
+子资源 锁前 优先级 2
+父资源 锁前 优先级 1
+父资源 锁前 优先级 2
+（锁）
+子资源 锁后 优先级 10001
+子资源 锁后 优先级 10002
+父资源 锁后 优先级 10001
+父资源 锁后 优先级 10002
+
 To release all the resources, you need to call ResourceOwnerRelease() three
 times, once for each phase. You may perform additional tasks between the
 phases, but after the first call to ResourceOwnerRelease(), you cannot use
@@ -169,9 +282,17 @@ the ResourceOwner to remember any more resources. You also cannot call
 ResourceOwnerForget on the resource owner to release any previously
 remembered resources "in retail", after you have started the release process.
 
+要释放所有资源，您需要调用 ResourceOwnerRelease() 三次，每次针对一个阶段。
+您可以在各个阶段之间执行其他任务，但在第一次调用 ResourceOwnerRelease() 后，您将无法再使用 ResourceOwner 记住更多资源。
+在您开始释放过程后，您也不能在资源拥有者上调用 ResourceOwnerForget 来释放任何先前记住的资源。
+
 Normally, you are expected to call ResourceOwnerForget on every resource so
 that at commit, the ResourceOwner is empty (locks are an exception). If there
 are any resources still held at commit, ResourceOwnerRelease will print a
 WARNING on each such resource. At abort, however, we truly rely on the
 ResourceOwner mechanism and it is normal that there are resources to be
 released.
+
+通常，您应该在每个资源上调用 ResourceOwnerForget，以便在提交时 ResourceOwner 为空（锁除外）。
+如果在提交时仍然持有任何资源，ResourceOwnerRelease 将在每个此类资源上打印警告。
+但是在中止时，我们确实依赖于 ResourceOwner 机制，正常情况下会有资源被释放。
