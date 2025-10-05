@@ -1,0 +1,61 @@
+# PostgreSQL 解析器模块说明文档
+
+Parser
+======
+解析器
+======
+
+This directory does more than tokenize and parse SQL queries.  It also
+creates Query structures for the various complex queries that are passed
+to the optimizer and then executor.
+
+这个目录不仅负责对SQL查询进行标记化和解析，还为传递给优化器和执行器的各种复杂查询创建Query结构。
+
+parser.c	things start here
+parser.c	解析器的入口文件
+scan.l		break query into tokens
+scan.l		将查询分解为标记（词法分析）
+scansup.c	handle escapes in input strings
+scansup.c	处理输入字符串中的转义字符
+gram.y		parse the tokens and produce a "raw" parse tree
+gram.y		解析标记并生成"原始"解析树（语法分析）
+analyze.c	top level of parse analysis for optimizable queries
+analyze.c	可优化查询的解析分析顶层入口
+parse_agg.c	handle aggregates, like SUM(col1),  AVG(col2), ...
+parse_agg.c	处理聚合函数，如SUM(col1)、AVG(col2)等
+parse_clause.c	handle clauses like WHERE, ORDER BY, GROUP BY, ...
+parse_clause.c	处理WHERE、ORDER BY、GROUP BY等子句
+parse_coerce.c	handle coercing expressions to different data types
+parse_coerce.c	处理将表达式强制转换为不同数据类型
+parse_collate.c	assign collation information in completed expressions
+parse_collate.c	在已完成的表达式中分配排序规则信息
+parse_cte.c	handle Common Table Expressions (WITH clauses)
+parse_cte.c	处理公共表表达式（WITH子句）
+parse_expr.c	handle expressions like col, col + 3, x = 3 or x = 4
+parse_expr.c	处理表达式，如col、col + 3、x = 3或x = 4
+parse_enr.c	handle ephemeral named rels (trigger transition tables, ...)
+parse_enr.c	处理临时命名关系（触发器过渡表等）
+parse_func.c	handle functions, table.column and column identifiers
+parse_func.c	处理函数、表.列和列标识符
+parse_merge.c	handle MERGE
+parse_merge.c	处理MERGE语句
+parse_node.c	create nodes for various structures
+parse_node.c	为各种结构创建节点
+parse_oper.c	handle operators in expressions
+parse_oper.c	处理表达式中的操作符
+parse_param.c	handle Params (for the cases used in the core backend)
+parse_param.c	处理参数（用于核心后端的情况）
+parse_relation.c support routines for tables and column handling
+parse_relation.c	支持表和列处理的例程
+parse_target.c	handle the result list of the query
+parse_target.c	处理查询的结果列表
+parse_type.c	support routines for data type handling
+parse_type.c	支持数据类型处理的例程
+parse_utilcmd.c	parse analysis for utility commands (done at execution time)
+parse_utilcmd.c	实用命令的解析分析（在执行时完成）
+
+See also src/common/keywords.c, which contains the table of standard
+keywords and the keyword lookup function.  We separated that out because
+various frontend code wants to use it too.
+
+另请参见src/common/keywords.c，其中包含标准关键字表和关键字查找函数。我们将其分离出来，因为各种前端代码也想使用它。
