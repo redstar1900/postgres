@@ -1,0 +1,97 @@
+/*-------------------------------------------------------------------------
+ *
+ * syslogger.h
+ *	  从 postmaster/syslogger.c 导出的接口。
+ *
+ * Copyright (c) 2004-2024, PostgreSQL 全球开发组
+ *
+ * src/include/postmaster/syslogger.h
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef _SYSLOGGER_H
+#define _SYSLOGGER_H
+
+#include <limits.h>				/* 用于 PIPE_BUF */
+
+
+/*
+ * 用于写入系统日志记录器管道的基础协议结构。这里的想法是
+ * 将长消息分成不超过 PIPE_BUF 字节的块，根据 POSIX 规范，这些块必须
+ * 原子性地写入管道。管道读取器然后使用协议头部将消息的各个部分
+ * 重新组装成单个字符串。读取器还可以处理来自管道的非协议数据，
+ * 尽管我们不能保证长字符串不会被拆分。
+ *
+ * 我们在 is_last 中使用非零字节，以使协议对找到虚假的双零字节序言
+ * 更加健壮。但除非我们小心，否则我们仍然可能在 len 和/或 pid 字节中找到它。
+ */
+
+#ifdef PIPE_BUF
+/* 是否有任何系统的 PIPE_BUF > 64K？不太可能，但是... */
+#if PIPE_BUF > 65536
+#define PIPE_CHUNK_SIZE  65536
+#else
+#define PIPE_CHUNK_SIZE  ((int) PIPE_BUF)
+#endif
+#else							/* 未定义 */
+/* POSIX 规定 PIPE_BUF 的值必须至少为 512，所以使用这个值 */
+#define PIPE_CHUNK_SIZE  512
+#endif
+
+typedef struct
+{
+	char		nuls[2];		/* 始终为 \0\0 */
+	uint16		len;			/* 此块的大小（仅计数数据） */
+	int32		pid;			/* 写入者的 pid */
+	bits8		flags;			/* PIPE_PROTO_* 的位掩码 */
+	char		data[FLEXIBLE_ARRAY_MEMBER];	/* 数据负载从这里开始 */
+} PipeProtoHeader;
+
+typedef union
+{
+	PipeProtoHeader proto;
+	char		filler[PIPE_CHUNK_SIZE];
+} PipeProtoChunk;
+
+#define PIPE_HEADER_SIZE  offsetof(PipeProtoHeader, data)
+#define PIPE_MAX_PAYLOAD  ((int) (PIPE_CHUNK_SIZE - PIPE_HEADER_SIZE))
+
+/* PipeProtoHeader->flags 的标志位 */
+#define PIPE_PROTO_IS_LAST	0x01	/* 消息的最后一块？ */
+/* 日志目标 */
+#define PIPE_PROTO_DEST_STDERR	0x10
+#define PIPE_PROTO_DEST_CSVLOG	0x20
+#define PIPE_PROTO_DEST_JSONLOG	0x40
+
+/* GUC 选项 */
+extern PGDLLIMPORT bool Logging_collector;
+extern PGDLLIMPORT int Log_RotationAge;
+extern PGDLLIMPORT int Log_RotationSize;
+extern PGDLLIMPORT char *Log_directory;
+extern PGDLLIMPORT char *Log_filename;
+extern PGDLLIMPORT bool Log_truncate_on_rotation;
+extern PGDLLIMPORT int Log_file_mode;
+
+#ifndef WIN32
+extern PGDLLIMPORT int syslogPipe[2];
+#else
+extern PGDLLIMPORT HANDLE syslogPipe[2];
+#endif
+
+
+extern int	SysLogger_Start(void);
+
+extern void write_syslogger_file(const char *buffer, int count, int destination);
+
+extern void SysLoggerMain(char *startup_data, size_t startup_data_len) pg_attribute_noreturn();
+
+extern bool CheckLogrotateSignal(void);
+extern void RemoveLogrotateSignalFiles(void);
+
+/*
+ * 保存关于系统日志记录器当前正在使用的日志文件的元数据信息的文件名
+ */
+#define LOG_METAINFO_DATAFILE  "current_logfiles"
+#define LOG_METAINFO_DATAFILE_TMP  LOG_METAINFO_DATAFILE ".tmp"
+
+#endif							/* _SYSLOGGER_H */

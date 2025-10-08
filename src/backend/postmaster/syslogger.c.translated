@@ -1,0 +1,1323 @@
+/*-------------------------------------------------------------------------*
+ * 系统日志记录器进程的实现
+ *
+ * 系统日志记录器是一个独立的进程，负责收集来自PostgreSQL服务器各个组件的日志消息
+ * 并将它们写入到日志文件中。这使得日志消息的处理不会阻塞服务器的正常操作。
+ *
+ * 主要功能:
+ * - 从管道读取日志消息
+ * - 将日志写入不同格式的文件（标准文本、CSV、JSON）
+ * - 支持基于时间和大小的日志文件轮换
+ * - 处理各种信号以控制日志行为
+ *
+ * Copyright (c) 2000-2023, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  src/backend/postmaster/syslogger.c
+ *
+ *-------------------------------------------------------------------------*
+ */
+#include "postgres.h"
+
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/file.h>
+
+#ifdef WIN32
+#include <io.h>
+#include <process.h>
+#else
+#include <poll.h>
+#endif
+
+#include "common/hashfn.h"
+#include "lib/stringinfo.h"
+#include "libpq/libpq.h"
+#include "pgstat.h"
+#include "postmaster/postmaster.h"
+#include "postmaster/syslogger.h"
+#include "storage/fd.h"
+#include "storage/ipc.h"
+#include "storage/latch.h"
+#include "storage/pmsignal.h"
+#include "storage/proc.h"
+#include "utils/guc.h"
+#include "utils/memutils.h"
+#include "utils/timestamp.h"
+
+/* 定义常量 */
+#define READ_BUF_SIZE 4096		/* 管道读取缓冲区大小 */
+#define MAX_LOGFILES_PER_ENTRY 8	/* 每个日志文件轮换条目处理的最大文件数 */
+#define MAX_ROTATIONS_PER_DAY 999	/* 每天最大轮换次数，用于文件名格式化 */
+#define LOGROTATE_SIGNAL_FILE "%s/pg_logrotate.lock"
+#define LOG_METAINFO_DATAFILE "%s/pg_logmeta.conf"
+#define LOG_METAINFO_DATAFILE_TMP "%s/pg_logmeta.conf.tmp"
+
+/* 配置参数声明 */
+PGDLLIMPORT char *Log_directory;
+PGDLLIMPORT char *Log_filename;
+PGDLLIMPORT int Log_RotationAge;
+PGDLLIMPORT int Log_RotationSize;
+PGDLLIMPORT bool Log_truncate_on_rotation;
+PGDLLIMPORT int Log_destination;
+PGDLLIMPORT int Log_file_mode;
+PGDLLIMPORT bool Logging_collector;
+
+/* 共享内存中的状态变量 */
+PGDLLIMPORT int syslogPipe[2];
+
+/* 全局变量 */
+static FILE *syslogFile = NULL;		/* 标准错误日志文件 */
+static FILE *csvlogFile = NULL;		/* CSV 格式日志文件 */
+static FILE *jsonlogFile = NULL;	/* JSON 格式日志文件 */
+static char *last_sys_file_name = NULL;
+static char *last_csv_file_name = NULL;
+static char *last_json_file_name = NULL;
+static pg_time_t next_rotation_time = 0;
+static bool rotation_requested = false;
+static bool rotation_disabled = false;
+static bool pipe_eof_seen = false;
+static bool redirection_done = false;
+static pg_time_t first_syslogger_file_time;
+
+/* 保存缓冲区结构，用于处理来自不同进程的日志消息 */
+typedef struct
+{
+	pid_t		pid;			/* 发送进程的 PID，0 表示未使用 */
+	StringInfo	data;			/* 缓冲区数据 */
+} save_buffer;
+
+#define NBUFFER_LISTS 4			/* 缓冲区列表的数量，为了减少锁竞争 */
+#define BUFFERS_PER_LIST 16		/* 每个列表中的缓冲区数量 */
+
+static List *buffer_lists[NBUFFER_LISTS];
+
+#ifdef WIN32
+/* Windows 特定的全局变量 */
+static CRITICAL_SECTION sysloggerSection;
+static HANDLE pipeThreadHandle = 0;
+#endif
+
+/* 函数声明 */
+static void SysLoggerMain(int argc, char *argv[]);
+static void process_pipe_input(char *logbuffer, int *bytes_in_logbuffer);
+static void flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer);
+static FILE *logfile_open(const char *filename, const char *mode, bool allow_errors);
+static void logfile_rotate(bool time_based_rotation, int size_rotation_for);
+static bool logfile_rotate_dest(bool time_based_rotation, int size_rotation_for,
+								pg_time_t fntime, int target_dest,
+								char **last_file_name, FILE **logFile);
+static char *logfile_getname(pg_time_t timestamp, const char *suffix);
+static void set_next_rotation_time(void);
+static void update_metainfo_datafile(void);
+static void sigUsr1Handler(SIGNAL_ARGS);
+
+#ifdef EXEC_BACKEND
+static int syslogger_fdget(FILE *file);
+static FILE *syslogger_fdopen(int fd);
+#endif
+
+#ifdef WIN32
+static unsigned int __stdcall pipeThread(void *arg);
+#endif
+
+/*-------------------------------------------------------------------------*
+ * 主函数入口
+ *-------------------------------------------------------------------------*
+ */
+
+/*
+ * 启动系统日志记录器进程的函数
+ */
+Datum
+SysLogger_Start(void);
+
+/*
+ * 系统日志记录器进程的主入口点
+ *
+ * 这个函数是系统日志记录器进程的主循环，负责接收来自管道的日志消息并将其写入日志文件。
+ * 它还处理日志文件的轮换和各种信号。
+ */
+void
+SysLoggerMain(int argc, char *argv[])
+{
+	/* 初始化进程环境 */
+	InitPostmasterChild();
+
+	/* 设置信号处理 */
+	pqsignal(SIGTERM, SIG_IGN);
+	pqsignal(SIGQUIT, SIG_IGN);
+	pqsignal(SIGINT, SIG_IGN);
+	pqsignal(SIGHUP, sigHupHandler);
+	pqsignal(SIGUSR1, sigUsr1Handler);
+	pqsignal(SIGUSR2, PostmasterStateMachineHandler);
+	pqsignal(SIGPIPE, SIG_IGN);
+	pqsignal(SIGALRM, SIG_IGN);
+	pqsignal(SIGFPE, SIG_DFL);
+	pqsignal(SIGCHLD, SIG_DFL);
+	pqsignal(SIGTTIN, SIG_DFL);
+	pqsignal(SIGTTOU, SIG_DFL);
+	pqsignal(SIGXFSZ, SIG_DFL);
+	pqsignal(SIGXCPU, SIG_DFL);
+	pqsignal(SIGIO, SIG_IGN);
+
+	/* 初始化共享内存状态 */
+	InitProcess();
+
+	/* 设置内存上下文 */
+	SetProcessingMode(BootstrapProcessing);
+	CreateSharedMemoryAndSemaphores();
+	SetProcessingMode(NormalProcessing);
+
+	/* 获取 latch 以便能够被唤醒 */
+	MyLatch = &MainLatch;
+	InitializeLatch(MyLatch);
+
+	/* 初始化缓冲区列表 */
+	for (int i = 0; i < NBUFFER_LISTS; i++)
+	{
+		buffer_lists[i] = NIL;
+	}
+
+#ifdef WIN32
+	/* Windows 平台特定的初始化 */
+	InitializeCriticalSection(&sysloggerSection);
+	EnterCriticalSection(&sysloggerSection);
+
+	/* 创建一个线程来处理管道输入 */
+	pipeThreadHandle = (HANDLE) _beginthreadex(NULL, 0, pipeThread, NULL, 0, NULL);
+	if (pipeThreadHandle == 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+				 errmsg("无法创建管道读取线程: %m")));
+
+	/* 设置线程优先级 */
+	SetThreadPriority(pipeThreadHandle, THREAD_PRIORITY_LOWEST);
+#else
+	/* Unix 平台特定的初始化 */
+	/* 关闭管道的写入端 */
+	close(syslogPipe[1]);
+	syslogPipe[1] = -1;
+
+	/* 设置管道为非阻塞模式 */
+	fcntl(syslogPipe[0], F_SETFL, O_NONBLOCK);
+#endif
+
+	/* 设置下一次日志轮换时间 */
+	set_next_rotation_time();
+
+	/* 主循环 */
+	for (;;)
+	{
+		bool		do_rotation = false;
+		int			size_rotation_for = 0;
+		pg_time_t	now;
+		int			rc;
+		WaitEventSet *wes;
+		WaitEvent	event;
+		long		cur_timeout = -1L;
+
+		/* 检查是否需要轮换日志文件 */
+		now = (pg_time_t) time(NULL);
+		if (!rotation_disabled && !rotation_requested && Log_RotationAge > 0 && next_rotation_time <= now)
+			do_rotation = true;
+
+		/* 检查是否收到轮换请求 */
+		if (!rotation_disabled && CheckLogrotateSignal())
+		{
+			do_rotation = true;
+			RemoveLogrotateSignalFiles();
+		}
+
+		/* 处理轮换请求 */
+		if (rotation_requested)
+		{
+			do_rotation = true;
+			/* 如果是自动轮换请求，检查文件大小 */
+			if (Log_RotationSize > 0)
+			{
+#ifndef WIN32
+				/* 在非Windows平台，我们可以直接检查文件大小 */
+				if (syslogFile != NULL && ftell(syslogFile) >= Log_RotationSize * 1024L)
+					size_rotation_for |= LOG_DESTINATION_STDERR;
+				if (csvlogFile != NULL && ftell(csvlogFile) >= Log_RotationSize * 1024L)
+					size_rotation_for |= LOG_DESTINATION_CSVLOG;
+				if (jsonlogFile != NULL && ftell(jsonlogFile) >= Log_RotationSize * 1024L)
+					size_rotation_for |= LOG_DESTINATION_JSONLOG;
+#else
+				/* 在Windows平台，大小检查在管道线程中完成 */
+				/* 此处故意为空，因为我们不知道具体哪个文件需要轮换 */
+#endif
+			}
+		}
+
+		/* 执行日志文件轮换 */
+		if (do_rotation)
+			logfile_rotate(!rotation_requested, size_rotation_for);
+
+		/* 设置下一次超时时间 */
+		if (!rotation_disabled && Log_RotationAge > 0)
+		{
+			now = (pg_time_t) time(NULL);
+			if (next_rotation_time > now)
+			{
+				long		delay;
+
+				delay = (long) (next_rotation_time - now);
+				/* 避免溢出 */
+				if (delay > INT_MAX / 1000)
+					delay = INT_MAX / 1000;
+				cur_timeout = delay * 1000L;	/* 转换为毫秒 */
+			}
+			else
+				cur_timeout = 0;
+		}
+		else
+			cur_timeout = -1L;
+
+		/* 创建等待事件集 */
+		wes = CreateWaitEventSet(TopMemoryContext, 2);
+		AddWaitEventToSet(wes, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch, NULL);
+#ifndef WIN32
+		AddWaitEventToSet(wes, WL_SOCKET_READABLE, syslogPipe[0], NULL, NULL);
+#endif
+
+		/* 等待事件发生 */
+#ifndef WIN32
+		rc = WaitEventSetWait(wes, cur_timeout, &event, 1,
+							  WAIT_EVENT_SYSLOGGER_MAIN);
+
+		if (rc == 1 && event.events == WL_SOCKET_READABLE)
+		{
+			int			bytesRead;
+			char		logbuffer[READ_BUF_SIZE];
+			int			bytes_in_logbuffer = 0;
+
+			bytesRead = read(syslogPipe[0],
+							 logbuffer + bytes_in_logbuffer,
+							 sizeof(logbuffer) - bytes_in_logbuffer);
+			if (bytesRead < 0)
+			{
+				if (errno != EINTR)
+					ereport(LOG,
+							(errcode_for_socket_access(),
+							 errmsg("无法从日志管道读取: %m")));
+			}
+			else if (bytesRead > 0)
+			{
+				bytes_in_logbuffer += bytesRead;
+				process_pipe_input(logbuffer, &bytes_in_logbuffer);
+				continue;
+			}
+			else
+			{
+				/*
+				 * 当select()指示可读但读取到0字节，表示管道EOF：
+				 * 即没有进程持有管道的写入端。因此，postmaster和所有后端都已关闭，我们的工作已完成。
+				 */
+				pipe_eof_seen = true;
+
+				/* 如果还有剩余数据，则立即输出 */
+				flush_pipe_input(logbuffer, &bytes_in_logbuffer);
+			}
+		}
+#else							/* WIN32 */
+
+		/*
+		 * 在Windows上，我们让一个单独的线程来传输数据和检测管道EOF。
+		 * 主线程只是醒来处理SIGHUP和轮换条件。
+		 *
+		 * 服务器代码通常不是线程安全的，所以我们确保一次只有一个线程处于活动状态，
+		 * 通过在不睡眠时进入临界区来实现。
+		 */
+		LeaveCriticalSection(&sysloggerSection);
+
+		(void) WaitEventSetWait(wes, cur_timeout, &event, 1,
+								WAIT_EVENT_SYSLOGGER_MAIN);
+
+		EnterCriticalSection(&sysloggerSection);
+#endif							/* WIN32 */
+
+		/* 清理等待事件集 */
+		DestroyWaitEventSet(wes);
+
+		if (pipe_eof_seen)
+		{
+			/*
+			 * 在真实的stderr上看到此消息很烦人 - 所以我们将其设为DEBUG1以在正常使用中抑制。
+			 */
+			ereport(DEBUG1,
+					(errmsg_internal("日志记录器正在关闭")));
+
+			/*
+			 * 系统日志记录器的正常退出点。注意我们故意在退出前不关闭syslogFile；
+			 * 这是为了允许在proc_exit内部生成elog消息的可能性。
+			 * 常规的exit()将负责刷新和关闭stdio通道。
+			 */
+			proc_exit(0);
+		}
+	}
+}
+
+/*
+ * Postmaster子例程，用于启动系统日志记录器子进程。
+ */
+int
+SysLogger_Start(void)
+{
+	pid_t		sysloggerPid;
+	char	   *filename;
+#ifdef EXEC_BACKEND
+	SysloggerStartupData startup_data;
+#endif							/* EXEC_BACKEND */
+
+	if (!Logging_collector)
+		return 0;
+
+	/*
+	 * 如果是第一次运行，创建接收stderr输出的管道。
+	 *
+	 * 如果系统日志记录器崩溃并需要重启，我们继续使用同一个管道（实际上必须这样做，
+	 * 因为现存的后端将写入该管道）。
+	 *
+	 * 这意味着postmaster必须继续保持管道的读取端打开，以便我们可以将其传递给重生的系统日志记录器。
+	 * 这有点笨拙，但我们别无选择。
+	 *
+	 * 还要注意，我们不通过调用Reserve/ReleaseExternalFD来计算管道FD。
+	 * 在postmaster或系统日志记录器进程中，没有真正需要准确地计算它们，
+	 * 并且管道的两端最终会在所有其他postmaster子进程中关闭。
+	 */
+#ifndef WIN32
+	if (syslogPipe[0] < 0)
+	{
+		if (pipe(syslogPipe) < 0)
+			ereport(FATAL,
+					(errcode_for_socket_access(),
+					 errmsg("无法为syslog创建管道: %m")));
+	}
+#else
+	if (!syslogPipe[0])
+	{
+		SECURITY_ATTRIBUTES sa;
+
+		memset(&sa, 0, sizeof(SECURITY_ATTRIBUTES));
+		sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+		sa.bInheritHandle = TRUE;
+
+		if (!CreatePipe(&syslogPipe[0], &syslogPipe[1], &sa, 32768))
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("无法为syslog创建管道: %m")));
+	}
+#endif
+
+	/*
+	 * 如果日志目录不存在，则创建它；忽略错误
+	 */
+	(void) MakePGDirectory(Log_directory);
+
+	/*
+	 * 初始日志文件在postmaster中创建，以验证Log_directory是可写的。
+	 * 我们保存引用时间，以便系统日志记录器子进程可以重新计算此文件名。
+	 *
+	 * 在系统日志记录器重启期间重新执行此操作可能看起来有点奇怪，
+	 * 但我们必须这样做，因为postmaster在前一次fork后关闭了syslogFile（记住旧文件无论如何都是不正确的）。
+	 * 注意我们在这里总是追加，我们不会覆盖任何现有文件。
+	 * 这与正常规则一致，因为根据定义，这不是基于时间的轮换。
+	 */
+	first_syslogger_file_time = time(NULL);
+
+	filename = logfile_getname(first_syslogger_file_time, NULL);
+
+	syslogFile = logfile_open(filename, "a", false);
+
+	pfree(filename);
+
+	/*
+	 * 同样，对于初始CSV日志文件，如果启用了的话。（注意，即使仅名义上启用了CSV输出，
+	 * 我们也会打开syslogFile，因为某些代码路径无论如何都会写入syslogFile。）
+	 */
+	if (Log_destination & LOG_DESTINATION_CSVLOG)
+	{
+		filename = logfile_getname(first_syslogger_file_time, ".csv");
+
+		csvlogFile = logfile_open(filename, "a", false);
+
+		pfree(filename);
+	}
+
+	/*
+	 * 同样，对于初始JSON日志文件，如果启用了的话。（注意，即使仅名义上启用了JSON输出，
+	 * 我们也会打开syslogFile，因为某些代码路径无论如何都会写入syslogFile。）
+	 */
+	if (Log_destination & LOG_DESTINATION_JSONLOG)
+	{
+		filename = logfile_getname(first_syslogger_file_time, ".json");
+
+		jsonlogFile = logfile_open(filename, "a", false);
+
+		pfree(filename);
+	}
+
+#ifdef EXEC_BACKEND
+	startup_data.syslogFile = syslogger_fdget(syslogFile);
+	startup_data.csvlogFile = syslogger_fdget(csvlogFile);
+	startup_data.jsonlogFile = syslogger_fdget(jsonlogFile);
+	sysloggerPid = postmaster_child_launch(B_LOGGER, (char *) &startup_data, sizeof(startup_data), NULL);
+#else
+	sysloggerPid = postmaster_child_launch(B_LOGGER, NULL, 0, NULL);
+#endif							/* EXEC_BACKEND */
+
+	if (sysloggerPid == -1)
+	{
+		ereport(LOG,
+				(errmsg("无法fork系统日志记录器: %m")));
+		return 0;
+	}
+
+	/* 成功，在postmaster中 */
+
+	/* 现在重定向stderr（如果尚未完成） */
+	if (!redirection_done)
+	{
+#ifdef WIN32
+		int			fd;
+#endif
+
+		/*
+		 * 在重定向时留下线索，以防用户忘记重定向处于活动状态并只查看原始stderr目标文件。
+		 */
+		ereport(LOG,
+				(errmsg("将日志输出重定向到日志收集器进程"),
+				 errhint("未来的日志输出将出现在目录\"%s\"中。",
+						 Log_directory)));
+
+#ifndef WIN32
+		fflush(stdout);
+		if (dup2(syslogPipe[1], STDOUT_FILENO) < 0)
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("无法重定向stdout: %m")));
+		fflush(stderr);
+		if (dup2(syslogPipe[1], STDERR_FILENO) < 0)
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("无法重定向stderr: %m")));
+		/* 现在我们完成了管道的写入端。 */
+		close(syslogPipe[1]);
+		syslogPipe[1] = -1;
+#else
+
+		/*
+		 * 以二进制模式打开管道，并确保在dup'ed into后stderr也是二进制的，
+		 * 以避免干扰管道分块协议。
+		 */
+		fflush(stderr);
+		fd = _open_osfhandle((intptr_t) syslogPipe[1],
+							 _O_APPEND | _O_BINARY);
+		if (dup2(fd, STDERR_FILENO) < 0)
+			ereport(FATAL,
+					(errcode_for_file_access(),
+					 errmsg("无法重定向stderr: %m")));
+		close(fd);
+		_setmode(STDERR_FILENO, _O_BINARY);
+
+		/*
+		 * 现在我们完成了管道的写入端。不应调用CloseHandle()，因为前面的close()关闭了底层句柄。
+		 */
+		syslogPipe[1] = 0;
+#endif
+		redirection_done = true;
+	}
+
+	/* postmaster永远不会写入文件；关闭它们 */
+	fclose(syslogFile);
+	syslogFile = NULL;
+	if (csvlogFile != NULL)
+	{
+		fclose(csvlogFile);
+		csvlogFile = NULL;
+	}
+	if (jsonlogFile != NULL)
+	{
+		fclose(jsonlogFile);
+		jsonlogFile = NULL;
+	}
+	return (int) sysloggerPid;
+}
+
+
+#ifdef EXEC_BACKEND
+
+/*
+ * syslogger_fdget() -
+ *
+ * 获取已打开的错误输出文件的文件描述符的实用包装器。
+ * 在构建fork日志收集器的命令时使用。
+ */
+static int
+syslogger_fdget(FILE *file)
+{
+#ifndef WIN32
+	if (file != NULL)
+		return fileno(file);
+	else
+		return -1;
+#else
+	if (file != NULL)
+		return (int) _get_osfhandle(_fileno(file));
+	else
+		return 0;
+#endif							/* WIN32 */
+}
+
+/*
+ * syslogger_fdopen() -
+ *
+ * 使用给定的文件描述符重新打开错误输出文件的实用包装器。
+ * 在解析fork的日志收集器中的参数时使用。
+ */
+static FILE *
+syslogger_fdopen(int fd)
+{
+	FILE	   *file = NULL;
+
+#ifndef WIN32
+	if (fd != -1)
+	{
+		file = fdopen(fd, "a");
+		setvbuf(file, NULL, PG_IOLBF, 0);
+	}
+#else							/* WIN32 */
+	if (fd != 0)
+	{
+		fd = _open_osfhandle(fd, _O_APPEND | _O_TEXT);
+		if (fd > 0)
+		{
+			file = fdopen(fd, "a");
+			setvbuf(file, NULL, PG_IOLBF, 0);
+		}
+	}
+#endif							/* WIN32 */
+
+	return file;
+}
+#endif							/* EXEC_BACKEND */
+
+
+/* --------------------------------
+ *		管道协议处理
+ * --------------------------------
+ */
+
+/*
+ * 处理通过系统日志记录器管道接收的数据。
+ *
+ * 此例程解释了将日志消息作为（希望是原子的）块发送的日志管道协议 -
+ * 这些块在此处被检测和重新组装。
+ *
+ * 该协议有一个以两个nul字节开始的头部，然后是16位长度、发送进程的pid和一个标志，
+ * 以指示它是否是消息中的最后一个块。不完整的块会被保存，直到我们读取更多，
+ * 非最终块会被累积，直到我们获得最终块。
+ *
+ * 所有这些都是为了避免两个问题：
+ * . 部分消息被写入日志文件（混乱轮换），以及
+ * . 来自不同后端的消息被交错（消息混乱）。
+ *
+ * 任何非协议消息都直接写出。然而，这些应该只来自非PostgreSQL源（例如，第三方库写入stderr）。
+ *
+ * logbuffer是数据输入缓冲区，*bytes_in_logbuffer是存在的字节数。
+ * 退出时，任何尚未处理的数据都会在logbuffer中左对齐，并且*bytes_in_logbuffer会更新。
+ */
+static void
+process_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
+{
+	char	   *cursor = logbuffer;
+	int			count = *bytes_in_logbuffer;
+	int			dest = LOG_DESTINATION_STDERR;
+
+	/* 当我们有足够的头部数据时，处理数据... */
+	while (count >= (int) (offsetof(PipeProtoHeader, data) + 1))
+	{
+		PipeProtoHeader p;
+		int			chunklen;
+		bits8		dest_flags;
+
+		/* 我们有有效的头部吗？ */
+		memcpy(&p, cursor, offsetof(PipeProtoHeader, data));
+		dest_flags = p.flags & (PIPE_PROTO_DEST_STDERR |
+								PIPE_PROTO_DEST_CSVLOG |
+								PIPE_PROTO_DEST_JSONLOG);
+		if (p.nuls[0] == '\0' && p.nuls[1] == '\0' &&
+			p.len > 0 && p.len <= PIPE_MAX_PAYLOAD &&
+			p.pid != 0 &&
+			pg_number_of_ones[dest_flags] == 1)
+		{
+			List	   *buffer_list;
+			ListCell   *cell;
+			save_buffer *existing_slot = NULL,
+					   *free_slot = NULL;
+			StringInfo	str;
+
+			chunklen = PIPE_HEADER_SIZE + p.len;
+
+			/* 如果我们还没有整个块，则退出循环 */
+			if (count < chunklen)
+				break;
+
+			if ((p.flags & PIPE_PROTO_DEST_STDERR) != 0)
+				dest = LOG_DESTINATION_STDERR;
+			else if ((p.flags & PIPE_PROTO_DEST_CSVLOG) != 0)
+				dest = LOG_DESTINATION_CSVLOG;
+			else if ((p.flags & PIPE_PROTO_DEST_JSONLOG) != 0)
+				dest = LOG_DESTINATION_JSONLOG;
+			else
+			{
+				/* 根据头部验证，这不应该发生 */
+				Assert(false);
+			}
+
+			/* 查找此源pid的任何现有缓冲区 */
+			buffer_list = buffer_lists[p.pid % NBUFFER_LISTS];
+			foreach(cell, buffer_list)
+			{
+				save_buffer *buf = (save_buffer *) lfirst(cell);
+
+				if (buf->pid == p.pid)
+				{
+					existing_slot = buf;
+					break;
+				}
+				if (buf->pid == 0 && free_slot == NULL)
+					free_slot = buf;
+			}
+
+			if ((p.flags & PIPE_PROTO_IS_LAST) == 0)
+			{
+				/*
+				 * 保存完整的非最终块在每个pid的缓冲区中
+				 */
+				if (existing_slot != NULL)
+				{
+					/* 将块添加到前面块的数据中 */
+					str = &(existing_slot->data);
+					appendBinaryStringInfo(str,
+										   cursor + PIPE_HEADER_SIZE,
+										   p.len);
+				}
+				else
+				{
+					/* 消息的第一个块，保存在新的缓冲区中 */
+					if (free_slot == NULL)
+					{
+						/*
+						 * 需要一个空闲槽，但列表中没有，所以创建一个新的并将其扩展到列表中。
+						 */
+						free_slot = palloc(sizeof(save_buffer));
+						buffer_list = lappend(buffer_list, free_slot);
+						buffer_lists[p.pid % NBUFFER_LISTS] = buffer_list;
+					}
+					free_slot->pid = p.pid;
+					str = &(free_slot->data);
+					initStringInfo(str);
+					appendBinaryStringInfo(str,
+										   cursor + PIPE_HEADER_SIZE,
+										   p.len);
+				}
+			}
+			else
+			{
+				/*
+				 * 最终块 --- 将其添加到为该pid保存的任何内容中，
+				 * 无论哪种方式都将整个内容写出。
+				 */
+				if (existing_slot != NULL)
+				{
+					str = &(existing_slot->data);
+					appendBinaryStringInfo(str,
+										   cursor + PIPE_HEADER_SIZE,
+										   p.len);
+					write_syslogger_file(str->data, str->len, dest);
+					/* 标记缓冲区未使用，并回收字符串存储 */
+					existing_slot->pid = 0;
+					pfree(str->data);
+				}
+				else
+				{
+					/* 整个消息显然是一个块。 */
+					write_syslogger_file(cursor + PIPE_HEADER_SIZE, p.len,
+										 dest);
+				}
+			}
+
+			/* 完成处理这个块 */
+			cursor += chunklen;
+			count -= chunklen;
+		}
+		else
+		{
+			/* 处理非协议数据 */
+
+			/*
+			 * 查找协议头部的开始。如果找到，则转储数据到那里并重复循环。
+			 * 否则，转储所有数据并退出循环。（注意：如果可能的话，我们希望转储所有数据，
+			 * 以避免跨日志文件分割非协议消息。我们期望在许多场景中，
+			 * 非协议消息会在一次read()中到达，如果可能的话，我们希望尊重read()边界。）
+			 */
+			for (chunklen = 1; chunklen < count; chunklen++)
+			{
+				if (cursor[chunklen] == '\0')
+					break;
+			}
+			/* 回退到stderr日志作为目的地 */
+			write_syslogger_file(cursor, chunklen, LOG_DESTINATION_STDERR);
+			cursor += chunklen;
+			count -= chunklen;
+		}
+	}
+
+	/* 我们没有完整的块，所以将剩余的内容在缓冲区中左对齐 */
+	if (count > 0 && cursor != logbuffer)
+		memmove(logbuffer, cursor, count);
+	*bytes_in_logbuffer = count;
+}
+
+/*
+ * 强制输出任何缓冲的数据
+ *
+ * 这当前仅在系统日志记录器关闭时使用，但可能在其他时候有用，所以它小心地保持事物处于干净状态。
+ */
+static void
+flush_pipe_input(char *logbuffer, int *bytes_in_logbuffer)
+{
+	int			i;
+
+	/* 转储任何不完整的协议消息 */
+	for (i = 0; i < NBUFFER_LISTS; i++)
+	{
+		List	   *list = buffer_lists[i];
+		ListCell   *cell;
+
+		foreach(cell, list)
+		{
+			save_buffer *buf = (save_buffer *) lfirst(cell);
+
+			if (buf->pid != 0)
+			{
+				StringInfo	str = &(buf->data);
+
+				write_syslogger_file(str->data, str->len,
+									 LOG_DESTINATION_STDERR);
+				/* 标记缓冲区未使用，并回收字符串存储 */
+				buf->pid = 0;
+				pfree(str->data);
+			}
+		}
+	}
+
+	/*
+	 * 强制输出任何剩余的管道数据，原样输出；我们不费心尝试删除其中可能存在的任何协议头部。
+	 */
+	if (*bytes_in_logbuffer > 0)
+		write_syslogger_file(logbuffer, *bytes_in_logbuffer,
+							 LOG_DESTINATION_STDERR);
+	*bytes_in_logbuffer = 0;
+}
+
+
+/* --------------------------------
+ *		日志文件例程
+ * --------------------------------
+ */
+
+/*
+ * 将文本写入当前打开的日志文件
+ *
+ * 这被导出，以便当MyBackendType是B_LOGGER时，elog.c可以调用它。
+ * 这允许系统日志记录器进程记录自己的elog消息，
+ * 即使它的stderr不指向syslog管道。
+ */
+void
+write_syslogger_file(const char *buffer, int count, int destination)
+{
+	int			rc;
+	FILE	   *logfile;
+
+	/*
+	 * 如果我们被告知要写入结构化日志文件，但它未打开，
+	 * 则将数据转储到syslogFile（始终打开）。如果在postmaster启动后启用结构化输出，
+	 * 并且我们无法打开logFile，就会发生这种情况。在参数更改期间也存在竞争条件，
+	 * 后端可能在我们打开logFile之前或关闭它之后向我们发送结构化输出。
+	 * 将格式化的输出写入常规日志文件不是很好，但总比丢弃日志输出要好。
+	 *
+	 * 不要试图通过动态打开logFile来改进这一点。任何失败都会导致递归。
+	 */
+	if ((destination & LOG_DESTINATION_CSVLOG) && csvlogFile != NULL)
+		logfile = csvlogFile;
+	else if ((destination & LOG_DESTINATION_JSONLOG) && jsonlogFile != NULL)
+		logfile = jsonlogFile;
+	else
+		logfile = syslogFile;
+
+	rc = fwrite(buffer, 1, count, logfile);
+
+	/*
+	 * 尝试报告任何失败。我们不能使用ereport，因为它只会递归回到这里，
+	 * 但write_stderr是可以的：它将写入postmaster的原始stderr或/dev/null，
+	 * 但永远不会写入我们的输入管道，这会导致不同类型的循环。
+	 */
+	if (rc != count)
+		write_stderr("无法写入日志文件: %m\n");
+}
+
+#ifdef WIN32
+
+/*
+ * 工作线程，用于将数据从管道传输到当前日志文件。
+ *
+ * 我们需要这个是因为在Windows上，WaitForMultipleObjects在未命名管道上不起作用：
+ * 它总是报告"已触发"，所以阻塞的ReadFile将不允许SIGHUP；而select仅用于套接字。
+ */
+static unsigned int __stdcall
+pipeThread(void *arg)
+{
+	char		logbuffer[READ_BUF_SIZE];
+	int			bytes_in_logbuffer = 0;
+
+	for (;;)
+	{
+		DWORD		bytesRead;
+		BOOL		result;
+
+		result = ReadFile(syslogPipe[0],
+						  logbuffer + bytes_in_logbuffer,
+						  sizeof(logbuffer) - bytes_in_logbuffer,
+						  &bytesRead, 0);
+
+		/*
+		 * 在做任何可能触及主线程共享的全局状态的事情之前，进入临界区。
+		 * 特别是使用palloc()/pfree()的任何内容在临界区外都不安全。
+		 */
+		EnterCriticalSection(&sysloggerSection);
+		if (!result)
+		{
+			DWORD		error = GetLastError();
+
+			if (error == ERROR_HANDLE_EOF ||
+				error == ERROR_BROKEN_PIPE)
+				break;
+			_dosmaperr(error);
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("无法从日志管道读取: %m")));
+		}
+		else if (bytesRead > 0)
+		{
+			bytes_in_logbuffer += bytesRead;
+			process_pipe_input(logbuffer, &bytes_in_logbuffer);
+		}
+
+		/*
+		 * 如果我们填满了当前日志文件，轻推主线程进行日志轮换。
+		 */
+		if (Log_RotationSize > 0)
+		{
+			if (ftell(syslogFile) >= Log_RotationSize * 1024L ||
+				(csvlogFile != NULL && ftell(csvlogFile) >= Log_RotationSize * 1024L) ||
+				(jsonlogFile != NULL && ftell(jsonlogFile) >= Log_RotationSize * 1024L))
+				SetLatch(MyLatch);
+		}
+		LeaveCriticalSection(&sysloggerSection);
+	}
+
+	/* 我们仅在检测到管道EOF时退出上述循环 */
+	pipe_eof_seen = true;
+
+	/* 如果还有任何数据剩余，则立即输出 */
+	flush_pipe_input(logbuffer, &bytes_in_logbuffer);
+
+	/* 设置latch以唤醒主线程，主线程将退出 */
+	SetLatch(MyLatch);
+
+	LeaveCriticalSection(&sysloggerSection);
+	_endthread();
+	return 0;
+}
+#endif							/* WIN32 */
+
+/*
+ * 以适当的权限和缓冲选项打开新的日志文件。
+ *
+ * 如果allow_errors为true，我们只记录任何打开失败并返回NULL
+ * （errno仍然对fopen失败正确）。
+ * 否则，错误被视为致命错误。
+ */
+static FILE *
+logfile_open(const char *filename, const char *mode, bool allow_errors)
+{
+	FILE	   *fh;
+	mode_t		oumask;
+
+	/*
+	 * 注意我们不让Log_file_mode禁用IWUSR，因为我们当然希望能够自己写入文件。
+	 */
+oumask = umask((mode_t) ((~(Log_file_mode | S_IWUSR)) & (S_IRWXU | S_IRWXG | S_IRWXO)));
+	fh = fopen(filename, mode);
+	umask(oumask);
+
+	if (fh)
+	{
+		setvbuf(fh, NULL, PG_IOLBF, 0);
+
+#ifdef WIN32
+		/* 在Windows上使用CRLF行尾 */
+		_setmode(_fileno(fh), _O_TEXT);
+#endif
+	}
+	else
+	{
+		int			save_errno = errno;
+
+		ereport(allow_errors ? LOG : FATAL,
+				(errcode_for_file_access(),
+				 errmsg("无法打开日志文件\"%s\": %m",
+						filename)));
+		errno = save_errno;
+	}
+
+	return fh;
+}
+
+/*
+ * 为单个目标执行日志文件轮换，如target_dest所指定。
+ * 在成功的文件轮换后，*last_file_name和*logFile中存储的信息会更新。
+ *
+ * 如果轮换已停止，返回false；如果继续处理其他格式，返回true。
+ */
+static bool
+logfile_rotate_dest(bool time_based_rotation, int size_rotation_for,
+					pg_time_t fntime, int target_dest,
+					char **last_file_name, FILE **logFile)
+{
+	char	   *logFileExt = NULL;
+	char	   *filename;
+	FILE	   *fh;
+
+	/*
+	 * 如果目标目标刚刚关闭，关闭先前的文件并注销其数据。
+	 * 对于stderr，这不会发生，因为即使在log_destination中禁用stderr，syslogFile也被假定为始终打开。
+	 */
+	if ((Log_destination & target_dest) == 0 &&
+		target_dest != LOG_DESTINATION_STDERR)
+	{
+		if (*logFile != NULL)
+			fclose(*logFile);
+		*logFile = NULL;
+		if (*last_file_name != NULL)
+			pfree(*last_file_name);
+		*last_file_name = NULL;
+		return true;
+	}
+
+	/*
+	 * 如果还不是轮换时间，或者目标目标无需基于其文件大小进行轮换，则离开。
+	 */
+	if (!time_based_rotation && (size_rotation_for & target_dest) == 0)
+		return true;
+
+	/* 文件扩展名取决于目标类型 */
+	if (target_dest == LOG_DESTINATION_STDERR)
+		logFileExt = NULL;
+	else if (target_dest == LOG_DESTINATION_CSVLOG)
+		logFileExt = ".csv";
+	else if (target_dest == LOG_DESTINATION_JSONLOG)
+		logFileExt = ".json";
+	else
+	{
+		/* 不可能发生 */
+		Assert(false);
+	}
+
+	/* 构建新文件名 */
+	filename = logfile_getname(fntime, logFileExt);
+
+	/*
+	 * 决定是覆盖还是追加。我们可以覆盖，如果 (a) Log_truncate_on_rotation已设置，
+	 * (b) 轮换是由经过的时间触发的，而不是其他原因，并且 (c) 计算的文件名与我们之前登录的文件名不同。
+	 */
+	if (Log_truncate_on_rotation && time_based_rotation &&
+		*last_file_name != NULL &&
+		strcmp(filename, *last_file_name) != 0)
+		fh = logfile_open(filename, "w", true);
+	else
+		fh = logfile_open(filename, "a", true);
+
+	if (!fh)
+	{
+		/*
+		 * ENFILE/EMFILE在繁忙的系统上并不太令人惊讶；只要继续使用旧文件，直到我们设法获取新文件。
+		 * 否则，假设Log_directory有问题，并停止尝试创建文件。
+		 */
+		if (errno != ENFILE && errno != EMFILE)
+		{
+			ereport(LOG,
+					(errmsg("禁用自动轮换（使用SIGHUP重新启用）")));
+			rotation_disabled = true;
+		}
+
+		if (filename)
+			pfree(filename);
+		return false;
+	}
+
+	/* 填写新信息 */
+	if (*logFile != NULL)
+		fclose(*logFile);
+	*logFile = fh;
+
+	/* 不是pfree文件名，而是记住它供下次使用 */
+	if (*last_file_name != NULL)
+		pfree(*last_file_name);
+	*last_file_name = filename;
+
+	return true;
+}
+
+/*
+ * 执行日志文件轮换
+ */
+static void
+logfile_rotate(bool time_based_rotation, int size_rotation_for)
+{
+	pg_time_t	fntime;
+
+	rotation_requested = false;
+
+	/*
+	 * 当进行基于时间的轮换时，基于计划的轮换时间而不是当前时间发明新的日志文件名，
+	 * 以避免当我们不立即执行轮换时文件名中的"滑动"。
+	 */
+	if (time_based_rotation)
+		fntime = next_rotation_time;
+	else
+		fntime = time(NULL);
+
+	/* stderr的文件轮换 */
+	if (!logfile_rotate_dest(time_based_rotation, size_rotation_for, fntime,
+							 LOG_DESTINATION_STDERR, &last_sys_file_name,
+							 &syslogFile))
+		return;
+
+	/* csvlog的文件轮换 */
+	if (!logfile_rotate_dest(time_based_rotation, size_rotation_for, fntime,
+							 LOG_DESTINATION_CSVLOG, &last_csv_file_name,
+							 &csvlogFile))
+		return;
+
+	/* jsonlog的文件轮换 */
+	if (!logfile_rotate_dest(time_based_rotation, size_rotation_for, fntime,
+							 LOG_DESTINATION_JSONLOG, &last_json_file_name,
+							 &jsonlogFile))
+		return;
+
+	update_metainfo_datafile();
+
+	set_next_rotation_time();
+}
+
+
+/*
+ * 使用时间戳信息构造日志文件名
+ *
+ * 如果suffix不为NULL，将其追加到名称中，替换模式中可能存在的任何".log"。
+ *
+ * 结果是palloc分配的。
+ */
+static char *
+logfile_getname(pg_time_t timestamp, const char *suffix)
+{
+	char	   *filename;
+	int			len;
+
+	filename = palloc(MAXPGPATH);
+
+	snprintf(filename, MAXPGPATH, "%s/", Log_directory);
+
+	len = strlen(filename);
+
+	/* 将Log_filename视为strftime模式 */
+	pg_strftime(filename + len, MAXPGPATH - len, Log_filename,
+				pg_localtime(&timestamp, log_timezone));
+
+	if (suffix != NULL)
+	{
+		len = strlen(filename);
+		if (len > 4 && (strcmp(filename + (len - 4), ".log") == 0))
+			len -= 4;
+		strlcpy(filename + len, suffix, MAXPGPATH - len);
+	}
+
+	return filename;
+}
+
+/*
+ * 确定下一个计划的轮换时间，并存储在next_rotation_time中。
+ */
+static void
+set_next_rotation_time(void)
+{
+	pg_time_t	now;
+	struct pg_tm *tm;
+	int			rotinterval;
+
+	/* 如果基于时间的轮换被禁用，则无需执行任何操作 */
+	if (Log_RotationAge <= 0)
+		return;
+
+	/*
+	 * 这里的要求是选择下一个> now的时间，该时间是日志轮换间隔的"倍数"。
+	 * "倍数"可以相当宽松地解释。在这个版本中，我们对齐到log_timezone而不是GMT。
+	 */
+	rotinterval = Log_RotationAge * SECS_PER_MINUTE;	/* 转换为秒 */
+	now = (pg_time_t) time(NULL);
+	tm = pg_localtime(&now, log_timezone);
+	now += tm->tm_gmtoff;
+	now -= now % rotinterval;
+	now += rotinterval;
+	now -= tm->tm_gmtoff;
+	next_rotation_time = now;
+}
+
+/*
+ * 存储启用日志收集器时写入日志消息的文件的名称。
+ * 当有基于时间的日志文件轮换时，这对于查找当前日志文件的名称很有用。
+ * 文件名存储在临时文件中，该文件被重命名为最终目的地以实现原子性。
+ * 该文件以与数据目录中创建的相同权限打开，并具有适当的缓冲选项。
+ */
+static void
+update_metainfo_datafile(void)
+{
+	FILE	   *fh;
+	mode_t		oumask;
+
+	if (!(Log_destination & LOG_DESTINATION_STDERR) &&
+		!(Log_destination & LOG_DESTINATION_CSVLOG) &&
+		!(Log_destination & LOG_DESTINATION_JSONLOG))
+	{
+		if (unlink(LOG_METAINFO_DATAFILE) < 0 && errno != ENOENT)
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("无法删除文件\"%s\": %m",
+							LOG_METAINFO_DATAFILE)));
+		return;
+	}
+
+	/* 使用与数据目录相同的权限创建新文件 */
+oumask = umask(pg_mode_mask);
+	fh = fopen(LOG_METAINFO_DATAFILE_TMP, "w");
+	umask(oumask);
+
+	if (fh)
+	{
+		setvbuf(fh, NULL, PG_IOLBF, 0);
+
+#ifdef WIN32
+		/* 在Windows上使用CRLF行尾 */
+		_setmode(_fileno(fh), _O_TEXT);
+#endif
+	}
+	else
+	{
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("无法打开文件\"%s\": %m",
+						LOG_METAINFO_DATAFILE_TMP)));
+		return;
+	}
+
+	if (last_sys_file_name && (Log_destination & LOG_DESTINATION_STDERR))
+	{
+		if (fprintf(fh, "stderr %s\n", last_sys_file_name) < 0)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("无法写入文件\"%s\": %m",
+							LOG_METAINFO_DATAFILE_TMP)));
+			fclose(fh);
+			return;
+		}
+	}
+
+	if (last_csv_file_name && (Log_destination & LOG_DESTINATION_CSVLOG))
+	{
+		if (fprintf(fh, "csvlog %s\n", last_csv_file_name) < 0)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("无法写入文件\"%s\": %m",
+							LOG_METAINFO_DATAFILE_TMP)));
+			fclose(fh);
+			return;
+		}
+	}
+
+	if (last_json_file_name && (Log_destination & LOG_DESTINATION_JSONLOG))
+	{
+		if (fprintf(fh, "jsonlog %s\n", last_json_file_name) < 0)
+		{
+			ereport(LOG,
+					(errcode_for_file_access(),
+					 errmsg("无法写入文件\"%s\": %m",
+							LOG_METAINFO_DATAFILE_TMP)));
+			fclose(fh);
+			return;
+		}
+	}
+	fclose(fh);
+
+	if (rename(LOG_METAINFO_DATAFILE_TMP, LOG_METAINFO_DATAFILE) != 0)
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("无法将文件\"%s\"重命名为\"%s\": %m",
+						LOG_METAINFO_DATAFILE_TMP, LOG_METAINFO_DATAFILE)));
+}
+
+/* --------------------------------
+ *		信号处理程序例程
+ * --------------------------------
+ */
+
+/*
+ * 检查是否已到达日志轮换请求。应该在postmaster收到SIGUSR1后调用。
+ */
+bool
+CheckLogrotateSignal(void)
+{
+	struct stat stat_buf;
+
+	if (stat(LOGROTATE_SIGNAL_FILE, &stat_buf) == 0)
+		return true;
+
+	return false;
+}
+
+/*
+ * 删除发出日志轮换请求的文件。
+ */
+void
+RemoveLogrotateSignalFiles(void)
+{
+	unlink(LOGROTATE_SIGNAL_FILE);
+}
+
+/* SIGUSR1：设置标志以轮换日志文件 */
+static void
+sigUsr1Handler(SIGNAL_ARGS)
+{
+	rotation_requested = true;
+	SetLatch(MyLatch);
+}
