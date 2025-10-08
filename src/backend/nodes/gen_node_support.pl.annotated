@@ -1,0 +1,1491 @@
+#!/usr/bin/perl
+#----------------------------------------------------------------------
+#
+# Generate node support files:
+# - nodetags.h            # 节点类型枚举定义
+# - copyfuncs             # 节点复制函数
+# - equalfuncs            # 节点比较函数
+# - readfuncs             # 节点读取函数
+# - outfuncs              # 节点输出函数
+#
+# Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+# Portions Copyright (c) 1994, Regents of the University of California
+#
+# src/backend/nodes/gen_node_support.pl
+#
+#----------------------------------------------------------------------
+
+use strict;             # 启用严格模式，要求变量声明和禁止不安全的语法
+use warnings FATAL => 'all';  # 启用警告，并且将警告视为致命错误
+
+use File::Basename;     # 用于处理文件路径和文件名
+use Getopt::Long;       # 用于解析命令行选项
+
+use FindBin;            # 用于查找脚本所在目录
+use lib "$FindBin::RealBin/../catalog";  # 添加Catalog模块所在目录到库路径
+
+use Catalog;    # 导入Catalog模块，用于RenameTempFile函数
+
+my $output_path = '.';  # 默认输出目录为当前目录
+
+# 解析命令行选项，允许用户指定输出目录
+GetOptions('outdir:s' => \$output_path)
+  or die "$0: wrong arguments";  # 如果选项解析失败，输出错误信息并退出
+
+
+# 测试第一个参数是否是第二个参数列表中的元素
+sub elem
+{
+	my $x = shift;  # 获取第一个参数
+	return grep { $_ eq $x } @_;  # 返回grep结果，检查$x是否存在于剩余参数列表中
+}
+
+
+# 此列表定义了脚本要读取的标准头文件集及其处理顺序
+# 必须保持稳定的处理顺序，否则NodeTag枚举的顺序会变化，这将对ABI稳定性造成灾难性后果
+#
+# 目前，各种构建系统也有这个列表的副本，以便进行依赖检查
+# 将来我们可能会使此列表成为唯一副本
+# 现在，我们只检查它是否与命令行上传递的文件列表匹配
+my @all_input_files = qw(
+  nodes/nodes.h
+  nodes/primnodes.h
+  nodes/parsenodes.h
+  nodes/pathnodes.h
+  nodes/plannodes.h
+  nodes/execnodes.h
+  access/amapi.h
+  access/sdir.h
+  access/tableam.h
+  access/tsmapi.h
+  commands/event_trigger.h
+  commands/trigger.h
+  executor/tuptable.h
+  foreign/fdwapi.h
+  nodes/bitmapset.h
+  nodes/extensible.h
+  nodes/lockoptions.h
+  nodes/miscnodes.h
+  nodes/replnodes.h
+  nodes/supportnodes.h
+  nodes/value.h
+  utils/rel.h
+);
+
+# 这些输入文件中的节点自动被视为仅需要nodetag的节点
+# 将来我们可能会为其中一些文件添加显式的pg_node_attr标签并将它们从该列表中删除
+# 但目前这是最简单的方法
+my @nodetag_only_files = qw(
+  nodes/execnodes.h
+  access/amapi.h
+  access/sdir.h
+  access/tableam.h
+  access/tsmapi.h
+  commands/event_trigger.h
+  commands/trigger.h
+  executor/tuptable.h
+  foreign/fdwapi.h
+  nodes/lockoptions.h
+  nodes/miscnodes.h
+  nodes/replnodes.h
+  nodes/supportnodes.h
+);
+
+# ARM ABI稳定性检查：
+#
+# 在稳定分支中，设置$last_nodetag为应该接收自动生成nodetag编号的最后一个节点类型的名称
+# 设置$last_nodetag_no为其编号
+# （在当前nodetags.h文件的最后一行找到这些值）
+# 如果这些值与实际情况不匹配，脚本将报错，提供一个交叉检查，确保我们没有通过添加或删除nodetags来破坏ABI
+# 在HEAD分支中，这些变量应保持未定义，因为我们不保证开发期间的ABI稳定性
+
+my $last_nodetag = 'WindowObjectData';
+my $last_nodetag_no = 474;
+
+# 输出文件名列表
+my @output_files;
+
+# 收集节点名称的数组
+my @node_types = qw(Node);
+# 收集每个节点类型的信息的哈希表
+my %node_type_info;
+
+# 不需要复制支持的节点类型
+my @no_copy;
+# 不需要比较支持的节点类型
+my @no_equal;
+# 不需要查询jumble支持的节点类型
+my @no_query_jumble;
+# 不需要读取支持的节点类型
+my @no_read;
+# 不需要读写支持的节点类型
+my @no_read_write;
+# 有手工编写的读写支持的节点类型
+my @special_read_write;
+# 不需要任何支持函数，只需要节点标签的节点类型
+my @nodetag_only;
+
+# 通过直接赋值复制的类型列表
+my @scalar_types = qw(
+  bits32 bool char double int int8 int16 int32 int64 long uint8 uint16 uint32 uint64
+  AclMode AttrNumber Cardinality Cost Index Oid RelFileNumber Selectivity Size StrategyNumber SubTransactionId TimeLineID XLogRecPtr
+);
+
+# 收集枚举类型
+my @enum_types;
+
+# 收集抽象类型（因此没有节点标签，没有支持函数）
+my @abstract_types = qw(Node);
+
+# 特殊情况，它们要么没有自己的结构体，要么结构体不在头文件中
+# 我们为它们生成节点标签，但它们不参与节点支持
+my @extra_tags = qw(
+  IntList OidList XidList
+  AllocSetContext GenerationContext SlabContext BumpContext
+  TIDBitmap
+  WindowObjectData
+);
+
+# 这是一个常规节点，但我们跳过从其头文件中解析它
+# 因为我们在这里不会使用它的内部结构
+push @node_types, qw(List);
+# List在所有五个支持文件中也被特殊处理
+# （理想情况下，我们会将List标记为"special copy/equal"而不是"no copy/equal"）
+# 但在有其他用例之前，只需直接处理需要区分的测试
+push @no_copy, qw(List);
+push @no_equal, qw(List);
+push @no_query_jumble, qw(List);
+push @special_read_write, qw(List);
+
+# 具有自定义copy/equal实现的节点从.funcs.c中跳过，但在.switch.c中需要case语句
+my @custom_copy_equal;
+
+# 类似地，具有自定义read/write实现的节点
+my @custom_read_write;
+
+# 类似地，具有自定义query jumble实现的节点
+my @custom_query_jumble;
+
+# 跟踪具有手动分配的NodeTag编号的节点类型
+my %manual_nodetag_number;
+
+# 这是一个结构体，可以通过赋值复制
+# 目前不需要比较支持
+push @scalar_types, qw(QualCost);
+
+
+## 检查命令行上是否有预期数量的文件
+# 如果参数数量与预期不符，输出错误信息并退出
+if ($#ARGV != $#all_input_files) {
+	die "wrong number of input files, expected:\n@all_input_files\ngot:\n@ARGV\n";
+}
+
+## 读取输入文件
+
+my $next_input_file = 0;  # 下一个要处理的输入文件索引
+foreach my $infile (@ARGV)  # 遍历所有输入文件
+{
+	my $in_struct;          # 当前正在解析的结构体名称
+	my $subline;            # 结构体内部的行计数器
+	my $is_node_struct;     # 当前结构体是否为节点结构体
+	my $supertype;          # 当前结构体的父类型（如果有）
+	my $supertype_field;    # 父类型字段名
+
+	my $node_attrs = '';    # 节点属性字符串
+	my $node_attrs_lineno;  # 节点属性所在行号
+	my @my_fields;          # 当前结构体的字段列表
+	my %my_field_types;     # 当前结构体的字段类型哈希表
+	my %my_field_attrs;     # 当前结构体的字段属性哈希表
+
+	# 打开命令行中指定的文件，可能带有路径前缀
+	open my $ifh, '<', $infile or die "could not open \"$infile\": $!";
+
+	# 现在缩短文件名以用于下面的操作
+	$infile =~ s!.*src/include/!!;
+
+	# 检查它是否与@all_input_files中的下一个成员匹配
+	if ($infile ne $all_input_files[$next_input_file]) {
+		die "wrong input file ordering, expected @all_input_files\n";
+	}
+	$next_input_file++;  # 增加文件索引
+
+	# 读取整个文件内容
+	my $raw_file_content = do { local $/; <$ifh> };
+
+	# 去除C语言注释，保留换行符以便正确计数行
+	my $file_content = '';
+	while ($raw_file_content =~ m{^(.*?)(/\*.*?\*/)(.*)$}s)  # 匹配注释和前后内容
+	{
+		$file_content .= $1;  # 添加注释前的内容
+		my $comment = $2;     # 提取注释
+		$raw_file_content = $3;  # 更新剩余内容
+		$comment =~ tr/\n//cd;   # 只保留注释中的换行符
+		$file_content .= $comment;  # 添加保留换行符的注释
+	}
+	$file_content .= $raw_file_content;  # 添加最后一个注释后的内容
+
+	my $lineno = 0;       # 行号计数器
+	my $prevline = '';    # 前一行内容（用于处理跨行的情况）
+	foreach my $line (split /\n/, $file_content)  # 按行遍历文件内容
+	{
+		# 每行的处理
+		$lineno++;         # 增加行号
+		chomp $line;       # 去除行尾换行符
+		$line =~ s/\s*$//;  # 去除行尾空格
+		next if $line eq '';  # 跳过空行
+		next if $line =~ /^#(define|ifdef|endif)/;  # 跳过预处理器指令
+
+		# 在结构体内部，直到我们有完整的逻辑行为止不进行处理
+		if ($in_struct && $subline > 0)
+		{
+			if ($line =~ /;$/)  # 找到行尾分号
+			{
+				# 找到结束，重新附加任何前一行
+				$line = $prevline . $line;
+				$prevline = '';
+			}
+			elsif ($prevline eq ''
+				&& $line =~ /^\s*pg_node_attr\(([\w(), ]*)\)$/)
+			{
+				# 特殊情况：节点属性行不以分号结尾
+			}
+			else
+			{
+				# 将其暂时放在一边
+				$prevline .= $line . ' ';
+				next;
+			}
+		}
+
+		# 我们正在分析结构体定义
+		if ($in_struct)
+		{
+			$subline++;  # 增加结构体内部行计数器
+
+			# 第一行应该有左大括号
+			if ($subline == 1)
+			{
+				$is_node_struct = 0;  # 初始化为非节点结构体
+				$supertype = undef;    # 初始化为无父类型
+				next if $line eq '{';  # 如果是左大括号则继续
+				die "$infile:$lineno: expected opening brace\n";  # 否则报错
+			}
+			# 第二行可能是节点属性
+			elsif ($subline == 2
+				&& $line =~ /^\s*pg_node_attr\(([\w(), ]*)\)$/)
+			{
+				$node_attrs = $1;          # 提取属性字符串
+				$node_attrs_lineno = $lineno;  # 记录属性所在行号
+				# hack: 不计数这一行
+				$subline--;
+				next;
+			}
+			# 下一行应该有节点标签或父类型
+			elsif ($subline == 2)
+			{
+				if ($line =~ /^\s*NodeTag\s+type;/)  # 如果有NodeTag字段
+				{
+					$is_node_struct = 1;  # 标记为节点结构体
+					next;
+				}
+				elsif ($line =~ /\s*(\w+)\s+(\w+);/ and elem $1, @node_types)  # 如果有父类型字段
+				{
+					$is_node_struct = 1;      # 标记为节点结构体
+					$supertype = $1;          # 记录父类型
+					$supertype_field = $2;    # 记录父类型字段名
+					next;
+				}
+			}
+
+			# 结构体结束
+			if ($line =~ /^\}\s*(?:\Q$in_struct\E\s*)?;$/)  # 匹配右大括号和可能的结构体名
+			{
+				if ($is_node_struct)  # 如果是节点结构体
+				{
+					# 这是节点结构体定义的结束
+					# 保存我们收集的所有内容
+
+					# 处理节点属性
+					foreach my $attr (split /,\s*/, $node_attrs)
+					{
+						if ($attr eq 'abstract')  # 如果是抽象节点
+						{
+							push @abstract_types, $in_struct;
+						}
+						elsif ($attr eq 'custom_copy_equal')  # 如果有自定义copy/equal实现
+						{
+							push @custom_copy_equal, $in_struct;
+						}
+						elsif ($attr eq 'custom_read_write')  # 如果有自定义read/write实现
+						{
+							push @custom_read_write, $in_struct;
+						}
+						elsif ($attr eq 'custom_query_jumble')  # 如果有自定义query jumble实现
+						{
+							push @custom_query_jumble, $in_struct;
+						}
+						elsif ($attr eq 'no_copy')  # 如果不需要复制支持
+						{
+							push @no_copy, $in_struct;
+						}
+						elsif ($attr eq 'no_equal')  # 如果不需要比较支持
+						{
+							push @no_equal, $in_struct;
+						}
+						elsif ($attr eq 'no_copy_equal')  # 如果不需要复制和比较支持
+						{
+							push @no_copy, $in_struct;
+							push @no_equal, $in_struct;
+						}
+						elsif ($attr eq 'no_query_jumble')  # 如果不需要query jumble支持
+						{
+							push @no_query_jumble, $in_struct;
+						}
+						elsif ($attr eq 'no_read')  # 如果不需要读取支持
+						{
+							push @no_read, $in_struct;
+						}
+						elsif ($attr eq 'nodetag_only')  # 如果只需要节点标签
+						{
+							push @nodetag_only, $in_struct;
+						}
+						elsif ($attr eq 'special_read_write')  # 如果有特殊的读写支持
+						{
+							push @special_read_write, $in_struct;
+						}
+						elsif ($attr =~ /^nodetag_number\((\d+)\)$/)  # 如果有手动分配的节点标签号
+						{
+							$manual_nodetag_number{$in_struct} = $1;
+						}
+						else  # 未知属性
+						{
+							die
+							  "$infile:$node_attrs_lineno: unrecognized attribute \"$attr\"\n";
+						}
+					}
+
+					# 记录节点名称
+					push @node_types, $in_struct;
+
+					# 字段名称，类型，属性
+					my @f = @my_fields;
+					my %ft = %my_field_types;
+					my %fa = %my_field_attrs;
+
+					# 如果有父类型，也添加那些字段
+					if ($supertype)
+					{
+						my @superfields;
+						foreach
+						  my $sf (@{ $node_type_info{$supertype}->{fields} })
+						{
+							my $fn = "${supertype_field}.$sf";  # 构建父类型字段的完整路径
+							push @superfields, $fn;
+							$ft{$fn} =  # 记录字段类型
+							  $node_type_info{$supertype}->{field_types}{$sf};
+							if ($node_type_info{$supertype}
+								->{field_attrs}{$sf})
+							{
+								# 复制任何属性，调整array_size字段引用
+								my @newa = @{ $node_type_info{$supertype}
+								  ->{field_attrs}{$sf} };
+								foreach my $a (@newa)
+								{
+									$a =~  # 替换array_size引用
+									  s/array_size\((\w+)\)/array_size(${supertype_field}.$1)/;
+								}
+								$fa{$fn} = \@newa;  # 记录调整后的属性
+							}
+						}
+						unshift @f, @superfields;  # 将父类型字段添加到字段列表前面
+					}
+					# 保存在全局信息结构中
+					$node_type_info{$in_struct}->{fields} = \@f;
+					$node_type_info{$in_struct}->{field_types} = \%ft;
+					$node_type_info{$in_struct}->{field_attrs} = \%fa;
+
+					# 从文件传播nodetag_only标记到节点
+					if (elem $infile, @nodetag_only_files) {
+						push @nodetag_only, $in_struct;
+					}
+
+					# 从父类型传播一些节点属性
+					if ($supertype)
+					{
+						if (elem $supertype, @no_copy) {
+							push @no_copy, $in_struct;
+						}
+						if (elem $supertype, @no_equal) {
+							push @no_equal, $in_struct;
+						}
+						if (elem $supertype, @no_read) {
+							push @no_read, $in_struct;
+						}
+						if (elem $supertype, @no_query_jumble) {
+							push @no_query_jumble, $in_struct;
+						}
+					}
+				}
+
+				# 开始新的循环
+				$in_struct = undef;
+				$node_attrs = '';
+				@my_fields = ();
+				%my_field_types = ();
+				%my_field_attrs = ();
+			}
+			# 普通结构体字段
+			elsif ($line =~  # 匹配普通字段定义
+				/^\s*(.+)\s*\b(\w+)(\[[\w\s+]+\])?\s*(?:pg_node_attr\(([\w(), ]*)\))?;/
+			  )
+			{
+				if ($is_node_struct)
+				{
+					my $type = $1;           # 字段类型
+					my $name = $2;           # 字段名
+					my $array_size = $3;     # 数组大小（如果有）
+					my $attrs = $4;          # 字段属性（如果有）
+
+					# 去除"const"
+					$type =~ s/^const\s*//;
+					# 去除尾部空格
+					$type =~ s/\s*$//;
+					# 去除类型和"*"（指针）之间的空格
+					$type =~ s/\s+\*$/*/;
+					# 去除类型和"**"（指针数组）之间的空格
+					$type =~ s/\s+\*\*$/**/;
+
+					if ($type eq '') {  # 如果类型解析失败
+						die
+						  "$infile:$lineno: cannot parse data type in \"$line\"\n";
+					}
+
+					my @attrs;  # 字段属性数组
+					if ($attrs)  # 如果有属性
+					{
+						@attrs = split /,\s*/, $attrs;  # 分割属性
+						foreach my $attr (@attrs)  # 检查每个属性是否有效
+						{
+							if (   $attr !~ /^array_size\(\w+\)$/
+								&& $attr !~ /^copy_as\(\w+\)$/
+								&& $attr !~ /^read_as\(\w+\)$/
+								&& !elem $attr,
+								qw(copy_as_scalar
+								equal_as_scalar
+								equal_ignore
+								equal_ignore_if_zero
+								query_jumble_ignore
+								query_jumble_location
+								read_write_ignore
+								write_only_relids
+								write_only_nondefault_pathtarget
+								write_only_req_outer))
+							{
+								die
+								  "$infile:$lineno: unrecognized attribute \"$attr\"\n";
+							}
+						}
+					}
+
+					$type = $type . $array_size if $array_size;  # 添加数组大小（如果有）
+					push @my_fields, $name;                      # 记录字段名
+					$my_field_types{$name} = $type;              # 记录字段类型
+					$my_field_attrs{$name} = \@attrs;            # 记录字段属性
+				}
+			}
+			# 函数指针字段
+			elsif ($line =~  # 匹配函数指针字段定义
+				/^\s*([\w\s*]+)\s*\(\*(\w+)\)\s*\((.*)\)\s*(?:pg_node_attr\(([\w(), ]*)\))?;/
+			  )
+			{
+				if ($is_node_struct)
+				{
+					my $type = $1;   # 函数返回类型
+					my $name = $2;   # 函数名
+					my $args = $3;   # 函数参数
+					my $attrs = $4;  # 字段属性
+
+					my @attrs;  # 字段属性数组
+					if ($attrs)  # 如果有属性
+					{
+						@attrs = split /,\s*/, $attrs;  # 分割属性
+						foreach my $attr (@attrs)  # 检查每个属性是否有效
+						{
+							if (   $attr !~ /^copy_as\(\w+\)$/
+								&& $attr !~ /^read_as\(\w+\)$/
+								&& !elem $attr,
+								qw(equal_ignore read_write_ignore))
+							{
+								die
+								  "$infile:$lineno: unrecognized attribute \"$attr\"\n";
+							}
+						}
+					}
+
+					push @my_fields, $name;                      # 记录字段名
+					$my_field_types{$name} = 'function pointer';  # 记录字段类型
+					$my_field_attrs{$name} = \@attrs;            # 记录字段属性
+				}
+			}
+			else
+			{
+				# 我们对结构体外部的内容不太挑剔
+				# 但我们最好理解结构体内的一切
+				die "$infile:$lineno: could not parse \"$line\"\n";
+			}
+		}
+		# 不在结构体中
+		else
+		{
+			# 结构体开始？
+			if ($line =~ /^(?:typedef )?struct (\w+)$/ && $1 ne 'Node')
+			{
+				$in_struct = $1;
+				$subline = 0;
+			}
+			# 一个节点类型直接从另一个类型typedef而来
+			elsif ($line =~ /^typedef (\w+) (\w+);$/ and elem $1, @node_types)
+			{
+				my $alias_of = $1;  # 被别名的类型
+				my $n = $2;         # 新类型名
+
+				# 复制所有内容
+				push @node_types, $n;
+				my @f = @{ $node_type_info{$alias_of}->{fields} };
+				my %ft = %{ $node_type_info{$alias_of}->{field_types} };
+				my %fa = %{ $node_type_info{$alias_of}->{field_attrs} };
+				$node_type_info{$n}->{fields} = \@f;
+				$node_type_info{$n}->{field_types} = \%ft;
+				$node_type_info{$n}->{field_attrs} = \%fa;
+			}
+			# 收集枚举名称
+			elsif ($line =~ /^typedef enum (\w+)(\s*\/\*.*)?$/)
+			{
+				push @enum_types, $1;
+			}
+		}
+	}
+
+	if ($in_struct)  # 如果循环结束后还有未闭合的结构体
+	{
+		die "runaway \"$in_struct\" in file \"$infile\"\n";
+	}
+
+	close $ifh;  # 关闭文件
+}    # 遍历每个文件结束
+
+
+## 写入输出文件
+
+my $tmpext = ".tmp$$";  # 临时文件扩展名，包含进程ID
+
+# 输出文件的开头样板
+my $header_comment =
+  '/*-------------------------------------------------------------------------
+ *
+ * %s
+ *    Generated node infrastructure code
+ *
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ * NOTES
+ *  ******************************
+ *  *** DO NOT EDIT THIS FILE! ***
+ *  ******************************
+ *
+ *  It has been GENERATED by src/backend/nodes/gen_node_support.pl
+ *
+ *------------------------------------------------------------------------- */
+';
+
+
+# 生成nodetags.h文件
+
+push @output_files, 'nodetags.h';  # 添加到输出文件列表
+open my $nt, '>', "$output_path/nodetags.h$tmpext"  # 打开临时文件
+  or die "$output_path/nodetags.h$tmpext: $!";
+
+printf $nt $header_comment, 'nodetags.h';  # 写入文件头部注释
+
+my $tagno = 0;        # 标签计数器
+my $last_tag = undef;  # 最后一个标签
+foreach my $n (@node_types, @extra_tags)  # 遍历所有节点类型和额外标签
+{
+	next if elem $n, @abstract_types;  # 跳过抽象类型
+	if (defined $manual_nodetag_number{$n})  # 如果有手动分配的标签号
+	{
+		# 不改变$tagno或$last_tag
+		print $nt "\tT_${n} = $manual_nodetag_number{$n},\n";
+	}
+	else  # 自动分配标签号
+	{
+		$tagno++;          # 增加计数器
+		$last_tag = $n;    # 更新最后一个标签
+		print $nt "\tT_${n} = $tagno,\n";
+	}
+}
+
+# 验证最后一个自动分配的nodetag保持稳定
+if (defined $last_nodetag && $last_nodetag ne $last_tag) {
+	die "ABI stability break: last nodetag is $last_tag not $last_nodetag\n";
+}
+if (defined $last_nodetag_no && $last_nodetag_no != $tagno) {
+	die
+	  "ABI stability break: last nodetag number is $tagno not $last_nodetag_no\n";
+}
+
+close $nt;  # 关闭文件
+
+
+# 生成包含所有结构体定义的#include行
+my $node_includes = '';
+foreach my $infile (sort @ARGV)
+{
+	$infile =~ s!.*src/include/!!;  # 去掉路径前缀
+	$node_includes .= qq{#include "$infile"\n};
+}
+
+
+# 生成copyfuncs.c, equalfuncs.c相关文件
+
+push @output_files, 'copyfuncs.funcs.c';  # 添加到输出文件列表
+open my $cff, '>', "$output_path/copyfuncs.funcs.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'equalfuncs.funcs.c';  # 添加到输出文件列表
+open my $eff, '>', "$output_path/equalfuncs.funcs.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'copyfuncs.switch.c';  # 添加到输出文件列表
+open my $cfs, '>', "$output_path/copyfuncs.switch.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'equalfuncs.switch.c';  # 添加到输出文件列表
+open my $efs, '>', "$output_path/equalfuncs.switch.c$tmpext" or die $!;  # 打开临时文件
+
+printf $cff $header_comment, 'copyfuncs.funcs.c';  # 写入文件头部注释
+printf $eff $header_comment, 'equalfuncs.funcs.c';  # 写入文件头部注释
+printf $cfs $header_comment, 'copyfuncs.switch.c';  # 写入文件头部注释
+printf $efs $header_comment, 'equalfuncs.switch.c';  # 写入文件头部注释
+
+# 为每个文件集添加所需的#include行
+print $cff $node_includes;
+print $eff $node_includes;
+
+foreach my $n (@node_types)  # 遍历所有节点类型
+{
+	next if elem $n, @abstract_types;  # 跳过抽象类型
+	next if elem $n, @nodetag_only;    # 跳过只需要标签的类型
+	my $struct_no_copy = (elem $n, @no_copy);    # 结构体是否不需要复制支持
+	my $struct_no_equal = (elem $n, @no_equal);  # 结构体是否不需要比较支持
+	next if $struct_no_copy && $struct_no_equal;  # 如果两者都不需要，跳过
+
+	# 为copyfuncs.switch.c生成case语句（除非不需要复制支持）
+	unless ($struct_no_copy) {
+		print $cfs "\t\tcase T_${n}:\n"
+		  . "\t\t\tretval = _copy${n}(from);\n"
+		  . "\t\t\tbreak;\n";
+	}
+
+	# 为equalfuncs.switch.c生成case语句（除非不需要比较支持）
+	unless ($struct_no_equal) {
+		print $efs "\t\tcase T_${n}:\n"
+		  . "\t\t\tretval = _equal${n}(a, b);\n"
+		  . "\t\t\tbreak;\n";
+	}
+
+	next if elem $n, @custom_copy_equal;  # 如果有自定义实现，跳过
+
+	# 为copyfuncs.funcs.c生成函数定义（除非不需要复制支持）
+	unless ($struct_no_copy) {
+		print $cff "
+static $n *
+_copy${n}(const $n *from)
+{
+\t${n} *newnode = makeNode($n);
+
+";
+	}
+
+	# 为equalfuncs.funcs.c生成函数定义（除非不需要比较支持）
+	unless ($struct_no_equal) {
+		print $eff "
+static bool
+_equal${n}(const $n *a, const $n *b)
+{
+";
+	}
+
+	# 跟踪已处理的字段以支持字段顺序检查
+	my %previous_fields;
+
+	# 为每个字段打印指令
+	foreach my $f (@{ $node_type_info{$n}->{fields} })
+	{
+		my $t = $node_type_info{$n}->{field_types}{$f};  # 字段类型
+		my @a = @{ $node_type_info{$n}->{field_attrs}{$f} };  # 字段属性
+		my $copy_ignore = $struct_no_copy;    # 是否忽略复制
+		my $equal_ignore = $struct_no_equal;  # 是否忽略比较
+
+		# 提取每个字段的属性
+		my $array_size_field;    # 数组大小字段
+		my $copy_as_field;       # 复制为字段
+		my $copy_as_scalar = 0;  # 是否作为标量复制
+		my $equal_as_scalar = 0; # 是否作为标量比较
+		foreach my $a (@a)
+		{
+			if ($a =~ /^array_size\(([\w.]+)\)$/)  # 如果有数组大小字段
+			{
+				$array_size_field = $1;
+				# 坚持我们首先复制或比较数组大小！
+				if (!$previous_fields{$array_size_field}) {
+					die
+					  "array size field $array_size_field for field $n.$f must precede $f\n";
+				}
+			}
+			elsif ($a =~ /^copy_as\(([\w.]+)\)$/)  # 如果有复制为字段
+			{
+				$copy_as_field = $1;
+			}
+			elsif ($a eq 'copy_as_scalar')  # 如果作为标量复制
+			{
+				$copy_as_scalar = 1;
+			}
+			elsif ($a eq 'equal_as_scalar')  # 如果作为标量比较
+			{
+				$equal_as_scalar = 1;
+			}
+			elsif ($a eq 'equal_ignore')  # 如果忽略比较
+			{
+				$equal_ignore = 1;
+			}
+		}
+
+		# 如果请求，覆盖特定于类型的复制方法
+		if (defined $copy_as_field)  # 如果有复制为字段
+		{
+			print $cff "\tnewnode->$f = $copy_as_field;\n" unless $copy_ignore;
+			$copy_ignore = 1;
+		}
+		elsif ($copy_as_scalar)  # 如果作为标量复制
+		{
+			print $cff "\tCOPY_SCALAR_FIELD($f);\n" unless $copy_ignore;
+			$copy_ignore = 1;
+		}
+
+		# 如果请求，覆盖特定于类型的比较方法
+		if ($equal_as_scalar)  # 如果作为标量比较
+		{
+			print $eff "\tCOMPARE_SCALAR_FIELD($f);\n" unless $equal_ignore;
+			$equal_ignore = 1;
+		}
+
+		# 根据字段类型选择指令
+		if ($t eq 'char*')  # 字符串类型
+		{
+			print $cff "\tCOPY_STRING_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_STRING_FIELD($f);\n" unless $equal_ignore;
+		}
+		elsif ($t eq 'Bitmapset*' || $t eq 'Relids')  # 位图集类型
+		{
+			print $cff "\tCOPY_BITMAPSET_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_BITMAPSET_FIELD($f);\n"
+			  unless $equal_ignore;
+		}
+		elsif ($t eq 'ParseLoc')  # 解析位置类型
+		{
+			print $cff "\tCOPY_LOCATION_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_LOCATION_FIELD($f);\n" unless $equal_ignore;
+		}
+		elsif (elem $t, @scalar_types or elem $t, @enum_types)  # 标量类型或枚举类型
+		{
+			print $cff "\tCOPY_SCALAR_FIELD($f);\n" unless $copy_ignore;
+			if (elem 'equal_ignore_if_zero', @a)  # 如果为零则忽略比较
+			{
+				print $eff
+				  "\tif (a->$f != b->$f && a->$f != 0 && b->$f != 0)\n\t\treturn false;\n";
+			}
+			else
+			{
+				# 所有CoercionForm字段都被视为equal_ignore
+				print $eff "\tCOMPARE_SCALAR_FIELD($f);\n"
+				  unless $equal_ignore || $t eq 'CoercionForm';
+			}
+		}
+		# 标量类型的数组
+		elsif ($t =~ /^(\w+)\*$/ and elem $1, @scalar_types)
+		{
+			my $tt = $1;
+			if (!defined $array_size_field)  # 如果没有定义数组大小
+			{
+				die "no array size defined for $n.$f of type $t\n";
+			}
+			if ($node_type_info{$n}->{field_types}{$array_size_field} eq
+				'List*')  # 如果数组大小字段是List*
+			{
+				print $cff
+				  "\tCOPY_POINTER_FIELD($f, list_length(from->$array_size_field) * sizeof($tt));\n"
+				  unless $copy_ignore;
+				print $eff
+				  "\tCOMPARE_POINTER_FIELD($f, list_length(a->$array_size_field) * sizeof($tt));\n"
+				  unless $equal_ignore;
+			}
+			else  # 普通数组大小字段
+			{
+				print $cff
+				  "\tCOPY_POINTER_FIELD($f, from->$array_size_field * sizeof($tt));\n"
+				  unless $copy_ignore;
+				print $eff
+				  "\tCOMPARE_POINTER_FIELD($f, a->$array_size_field * sizeof($tt));\n"
+				  unless $equal_ignore;
+			}
+		}
+		elsif ($t eq 'function pointer')  # 函数指针类型
+		{
+			# 我们可以作为标量复制和比较
+			print $cff "\tCOPY_SCALAR_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_SCALAR_FIELD($f);\n" unless $equal_ignore;
+		}
+		# 节点类型
+		elsif (($t =~ /^(\w+)\*$/ or $t =~ /^struct\s+(\w+)\*$/)
+			and elem $1, @node_types)
+		{
+			# 检查节点类型是否有必要的支持
+			if ((elem $1, @no_copy or elem $1, @nodetag_only)
+				and $1 ne 'List'
+				and !$copy_ignore) {
+				die
+				  "node type \"$1\" lacks copy support, which is required for struct \"$n\" field \"$f\"\n";
+			}
+			if ((elem $1, @no_equal or elem $1, @nodetag_only)
+				and $1 ne 'List'
+				and !$equal_ignore) {
+				die
+				  "node type \"$1\" lacks equal support, which is required for struct \"$n\" field \"$f\"\n";
+			}
+
+			print $cff "\tCOPY_NODE_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_NODE_FIELD($f);\n" unless $equal_ignore;
+		}
+		# 数组（内联）
+		elsif ($t =~ /^\w+\[\w+\]$/)
+		{
+			print $cff "\tCOPY_ARRAY_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_ARRAY_FIELD($f);\n" unless $equal_ignore;
+		}
+		elsif ($t eq 'struct CustomPathMethods*'
+			|| $t eq 'struct CustomScanMethods*')
+		{
+			# 这些类型的字段必须是指向静态回调函数表的指针
+			# 所以我们不复制表本身，只引用原始表
+			print $cff "\tCOPY_SCALAR_FIELD($f);\n" unless $copy_ignore;
+			print $eff "\tCOMPARE_SCALAR_FIELD($f);\n" unless $equal_ignore;
+		}
+		else  # 无法处理的类型
+		{
+			die
+			  "could not handle type \"$t\" in struct \"$n\" field \"$f\"\n";
+		}
+
+		$previous_fields{$f} = 1;  # 标记为已处理
+	}
+
+	# 结束_copy函数
+	unless ($struct_no_copy) {
+		print $cff "
+\treturn newnode;
+}
+";
+	}
+	# 结束_equal函数
+	unless ($struct_no_equal) {
+		print $eff "
+\treturn true;
+}
+";
+	}
+}
+
+close $cff;  # 关闭文件
+close $eff;  # 关闭文件
+close $cfs;  # 关闭文件
+close $efs;  # 关闭文件
+
+
+# 生成outfuncs.c, readfuncs.c相关文件
+
+push @output_files, 'outfuncs.funcs.c';  # 添加到输出文件列表
+open my $off, '>', "$output_path/outfuncs.funcs.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'readfuncs.funcs.c';  # 添加到输出文件列表
+open my $rff, '>', "$output_path/readfuncs.funcs.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'outfuncs.switch.c';  # 添加到输出文件列表
+open my $ofs, '>', "$output_path/outfuncs.switch.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'readfuncs.switch.c';  # 添加到输出文件列表
+open my $rfs, '>', "$output_path/readfuncs.switch.c$tmpext" or die $!;  # 打开临时文件
+
+printf $off $header_comment, 'outfuncs.funcs.c';  # 写入文件头部注释
+printf $rff $header_comment, 'readfuncs.funcs.c';  # 写入文件头部注释
+printf $ofs $header_comment, 'outfuncs.switch.c';  # 写入文件头部注释
+printf $rfs $header_comment, 'readfuncs.switch.c';  # 写入文件头部注释
+
+print $off $node_includes;  # 添加包含语句
+print $rff $node_includes;  # 添加包含语句
+
+foreach my $n (@node_types)  # 遍历所有节点类型
+{
+	next if elem $n, @abstract_types;  # 跳过抽象类型
+	next if elem $n, @nodetag_only;    # 跳过只需要标签的类型
+	next if elem $n, @no_read_write;   # 跳过不需要读写支持的类型
+	next if elem $n, @special_read_write;  # 跳过有特殊读写支持的类型
+
+	my $no_read = (elem $n, @no_read);  # 是否不需要读取支持
+
+	# 输出格式以大写节点类型名称开始
+	my $N = uc $n;
+
+	# 为outfuncs.switch.c生成case语句
+	print $ofs "\t\t\tcase T_${n}:\n"
+	  . "\t\t\t\t_out${n}(str, obj);\n"
+	  . "\t\t\t\tbreak;\n";
+
+	# 为readfuncs.switch.c生成匹配代码（除非不需要读取支持）
+	unless ($no_read) {
+		print $rfs "\tif (MATCH(\"$N\", "
+		  . length($N) . "))\n"
+		  . "\t\treturn (Node *) _read${n}();\n";
+	}
+
+	next if elem $n, @custom_read_write;  # 如果有自定义实现，跳过
+
+	# 为outfuncs.funcs.c生成函数定义
+	print $off "
+static void
+_out${n}(StringInfo str, const $n *node)
+{
+\tWRITE_NODE_TYPE(\"$N\");
+
+";
+
+	# 为readfuncs.funcs.c生成函数定义（除非不需要读取支持）
+	unless ($no_read)
+	{
+		my $macro =  # 选择合适的宏
+		  (@{ $node_type_info{$n}->{fields} } > 0)
+		  ? 'READ_LOCALS'
+		  : 'READ_LOCALS_NO_FIELDS';
+		print $rff "
+static $n *
+_read${n}(void)
+{
+\t$macro($n);
+
+";
+	}
+
+	# 跟踪已处理的字段以支持字段顺序检查
+	# （这与前一个循环不完全冗余，因为我们可能正在考虑缺乏copy/equal支持的结构体）
+	my %previous_fields;
+
+	# 为每个字段打印指令
+	foreach my $f (@{ $node_type_info{$n}->{fields} })
+	{
+		my $t = $node_type_info{$n}->{field_types}{$f};  # 字段类型
+		my @a = @{ $node_type_info{$n}->{field_attrs}{$f} };  # 字段属性
+
+		# 提取每个字段的属性
+		my $array_size_field;    # 数组大小字段
+		my $read_as_field;       # 读取为字段
+		my $read_write_ignore = 0;  # 是否忽略读写
+		foreach my $a (@a)
+		{
+			if ($a =~ /^array_size\(([\w.]+)\)$/)  # 如果有数组大小字段
+			{
+				$array_size_field = $1;
+				# 坚持我们首先读取数组大小！
+				if (!$previous_fields{$array_size_field} && !$no_read) {
+					die
+					  "array size field $array_size_field for field $n.$f must precede $f\n";
+				}
+			}
+			elsif ($a =~ /^read_as\(([\w.]+)\)$/)  # 如果有读取为字段
+			{
+				$read_as_field = $1;
+			}
+			elsif ($a eq 'read_write_ignore')  # 如果忽略读写
+			{
+				$read_write_ignore = 1;
+			}
+		}
+
+		if ($read_write_ignore)  # 如果忽略读写
+		{
+			# 如果no_read则不需要做任何事情
+			if ($no_read) {
+				next;
+			}
+			# 对于带有read_as()的read_write_ignore，在读取端发出适当的赋值并继续
+			if (defined $read_as_field) {
+				print $rff "\tlocal_node->$f = $read_as_field;\n";
+				next;
+			}
+			# 否则，规范错误
+			die "$n.$f must not be marked read_write_ignore\n";
+		}
+
+		# 根据字段类型选择指令
+		if ($t eq 'bool')  # 布尔类型
+		{
+			print $off "\tWRITE_BOOL_FIELD($f);\n";
+			print $rff "\tREAD_BOOL_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'ParseLoc')  # 解析位置类型
+		{
+			print $off "\tWRITE_LOCATION_FIELD($f);\n";
+			print $rff "\tREAD_LOCATION_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'int'
+			|| $t eq 'int16'
+			|| $t eq 'int32'
+			|| $t eq 'AttrNumber'
+			|| $t eq 'StrategyNumber')  # 整数类型
+		{
+			print $off "\tWRITE_INT_FIELD($f);\n";
+			print $rff "\tREAD_INT_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'uint32'
+			|| $t eq 'bits32'
+			|| $t eq 'BlockNumber'
+			|| $t eq 'Index'
+			|| $t eq 'SubTransactionId')  # 无符号整数类型
+		{
+			print $off "\tWRITE_UINT_FIELD($f);\n";
+			print $rff "\tREAD_UINT_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'uint64'
+			|| $t eq 'AclMode')  # 64位无符号整数类型
+		{
+			print $off "\tWRITE_UINT64_FIELD($f);\n";
+			print $rff "\tREAD_UINT64_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'Oid' || $t eq 'RelFileNumber')  # OID类型
+		{
+			print $off "\tWRITE_OID_FIELD($f);\n";
+			print $rff "\tREAD_OID_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'long')  # 长整型
+		{
+			print $off "\tWRITE_LONG_FIELD($f);\n";
+			print $rff "\tREAD_LONG_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'char')  # 字符类型
+		{
+			print $off "\tWRITE_CHAR_FIELD($f);\n";
+			print $rff "\tREAD_CHAR_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'double')  # 双精度浮点类型
+		{
+			print $off "\tWRITE_FLOAT_FIELD($f);\n";
+			print $rff "\tREAD_FLOAT_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'Cardinality')  # 基数类型
+		{
+			print $off "\tWRITE_FLOAT_FIELD($f);\n";
+			print $rff "\tREAD_FLOAT_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'Cost')  # 成本类型
+		{
+			print $off "\tWRITE_FLOAT_FIELD($f);\n";
+			print $rff "\tREAD_FLOAT_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'QualCost')  # 质量成本类型（结构体）
+		{
+			print $off "\tWRITE_FLOAT_FIELD($f.startup);\n";
+			print $off "\tWRITE_FLOAT_FIELD($f.per_tuple);\n";
+			print $rff "\tREAD_FLOAT_FIELD($f.startup);\n" unless $no_read;
+			print $rff "\tREAD_FLOAT_FIELD($f.per_tuple);\n" unless $no_read;
+		}
+		elsif ($t eq 'Selectivity')  # 选择性类型
+		{
+			print $off "\tWRITE_FLOAT_FIELD($f);\n";
+			print $rff "\tREAD_FLOAT_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'char*')  # 字符串类型
+		{
+			print $off "\tWRITE_STRING_FIELD($f);\n";
+			print $rff "\tREAD_STRING_FIELD($f);\n" unless $no_read;
+		}
+		elsif ($t eq 'Bitmapset*' || $t eq 'Relids')  # 位图集类型
+		{
+			print $off "\tWRITE_BITMAPSET_FIELD($f);\n";
+			print $rff "\tREAD_BITMAPSET_FIELD($f);\n" unless $no_read;
+		}
+		elsif (elem $t, @enum_types)  # 枚举类型
+		{
+			print $off "\tWRITE_ENUM_FIELD($f, $t);\n";
+			print $rff "\tREAD_ENUM_FIELD($f, $t);\n" unless $no_read;
+		}
+		# 标量类型的数组
+		elsif ($t =~ /^(\w+)(\*|\[\w+\])$/ and elem $1, @scalar_types)
+		{
+			my $tt = uc $1;
+			if (!defined $array_size_field)  # 如果没有定义数组大小
+			{
+				die "no array size defined for $n.$f of type $t\n";
+			}
+			if ($node_type_info{$n}->{field_types}{$array_size_field} eq
+				'List*')  # 如果数组大小字段是List*
+			{
+				print $off
+				  "\tWRITE_${tt}_ARRAY($f, list_length(node->$array_size_field));\n";
+				print $rff
+				  "\tREAD_${tt}_ARRAY($f, list_length(local_node->$array_size_field));\n"
+				  unless $no_read;
+			}
+			else  # 普通数组大小字段
+			{
+				print $off
+				  "\tWRITE_${tt}_ARRAY($f, node->$array_size_field);\n";
+				print $rff
+				  "\tREAD_${tt}_ARRAY($f, local_node->$array_size_field);\n"
+				  unless $no_read;
+			}
+		}
+		elsif ($t eq 'function pointer')  # 函数指针类型
+		{
+			# 我们不打印这些，也不能读取它们
+			if (!$no_read) {
+				die "cannot read function pointer in struct \"$n\" field \"$f\"\n";
+			}
+		}
+		# 几个Path节点字段的特殊处理
+		elsif ($t eq 'RelOptInfo*' && elem 'write_only_relids', @a)
+		{
+			print $off
+			  "\tappendStringInfoString(str, \" :parent_relids \");\n"
+			  . "\toutBitmapset(str, node->$f->relids);\n";
+		}
+		elsif ($t eq 'PathTarget*' && elem 'write_only_nondefault_pathtarget',
+			@a)
+		{
+			(my $f2 = $f) =~ s/pathtarget/parent/;  # 构建父节点字段名
+			print $off "\tif (node->$f != node->$f2->reltarget)\n"
+			  . "\t\tWRITE_NODE_FIELD($f);\n";
+		}
+		elsif ($t eq 'ParamPathInfo*' && elem 'write_only_req_outer', @a)
+		{
+			print $off
+			  "\tappendStringInfoString(str, \" :required_outer \");\n"
+			  . "\tif (node->$f)\n"
+			  . "\t\toutBitmapset(str, node->$f->ppi_req_outer);\n"
+			  . "\telse\n"
+			  . "\t\toutBitmapset(str, NULL);\n";
+		}
+		# 节点类型
+		elsif (($t =~ /^(\w+)\*$/ or $t =~ /^struct\s+(\w+)\*$/)
+			and elem $1, @node_types)
+		{
+			# 检查节点类型是否有必要的支持
+			if (elem $1, @no_read_write or elem $1, @nodetag_only) {
+				die
+				  "node type \"$1\" lacks write support, which is required for struct \"$n\" field \"$f\"\n";
+			}
+			if ((elem $1, @no_read or elem $1, @nodetag_only)
+				and !$no_read) {
+				die
+				  "node type \"$1\" lacks read support, which is required for struct \"$n\" field \"$f\"\n";
+			}
+
+			print $off "\tWRITE_NODE_FIELD($f);\n";
+			print $rff "\tREAD_NODE_FIELD($f);\n" unless $no_read;
+		}
+		# 节点指针数组（目前仅支持写）
+		elsif (($t =~ /^(\w+)\*\*$/ or $t =~ /^struct\s+(\w+)\*\*$/)
+			and elem($1, @node_types))
+		{
+			if (!defined $array_size_field)  # 如果没有定义数组大小
+			{
+				die "no array size defined for $n.$f of type $t\n";
+			}
+			if ($node_type_info{$n}->{field_types}{$array_size_field} eq
+				'List*')  # 如果数组大小字段是List*
+			{
+				print $off
+				  "\tWRITE_NODE_ARRAY($f, list_length(node->$array_size_field));\n";
+				print $rff
+				  "\tREAD_NODE_ARRAY($f, list_length(local_node->$array_size_field));\n"
+				  unless $no_read;
+			}
+			else  # 普通数组大小字段
+			{
+				print $off
+				  "\tWRITE_NODE_ARRAY($f, node->$array_size_field);\n";
+				print $rff
+				  "\tREAD_NODE_ARRAY($f, local_node->$array_size_field);\n"
+				  unless $no_read;
+			}
+		}
+		elsif ($t eq 'struct CustomPathMethods*'
+			|| $t eq 'struct CustomScanMethods*')
+		{
+			print $off q{
+	/* CustomName is a key to lookup CustomScanMethods */
+	appendStringInfoString(str, " :methods ");
+	outToken(str, node->methods->CustomName);
+};
+			print $rff q!
+	{
+		/* Lookup CustomScanMethods by CustomName */
+		char	*custom_name;
+		const CustomScanMethods *methods;
+		token = pg_strtok(&length); /* skip methods: */
+		token = pg_strtok(&length); /* CustomName */
+		custom_name = nullable_string(token, length);
+		methods = GetCustomScanMethods(custom_name, false);
+		local_node->methods = methods;
+	}
+! unless $no_read;
+		}
+		else  # 无法处理的类型
+		{
+			die
+			  "could not handle type \"$t\" in struct \"$n\" field \"$f\"\n";
+		}
+
+		# 对于没有read_write_ignore的read_as()，我们必须读取outfuncs.c
+		# 生成的输出，但在读取时我们用read_as指定的字段的值
+		if (defined $read_as_field)  # 如果有读取为字段
+		{
+			print $rff "\tlocal_node->$f = $read_as_field;\n";
+		}
+
+		$previous_fields{$f} = 1;  # 标记为已处理
+	}
+
+	# 结束_out函数
+	print $off "}\n";
+
+	# 结束_read函数（如果需要）
+	unless ($no_read)
+	{
+		print $rff "\treturn local_node;\n";
+		print $rff "}\n";
+	}
+}
+
+close $off;  # 关闭文件
+close $rff;  # 关闭文件
+close $ofs;  # 关闭文件
+close $rfs;  # 关闭文件
+
+
+# 生成queryjumblefuncs.c相关文件
+
+push @output_files, 'queryjumblefuncs.funcs.c';  # 添加到输出文件列表
+open my $qff, '>', "$output_path/queryjumblefuncs.funcs.c$tmpext" or die $!;  # 打开临时文件
+push @output_files, 'queryjumblefuncs.switch.c';  # 添加到输出文件列表
+open my $qfs, '>', "$output_path/queryjumblefuncs.switch.c$tmpext" or die $!;  # 打开临时文件
+
+printf $qff $header_comment, 'queryjumblefuncs.funcs.c';  # 写入文件头部注释
+printf $qfs $header_comment, 'queryjumblefuncs.switch.c';  # 写入文件头部注释
+
+print $qff $node_includes;  # 添加包含语句
+
+# 生成_jumble函数的帮助宏
+print $qff "
+/*
+ * Helper macros for _jumble functions
+ */
+#define JUMBLE_LOCATION_FIELD(fldname) \
+	if (node->fldname != -1) \
+		jumble(jstate, &node->fldname, sizeof(ParseLoc));
+
+#define JUMBLE_SCALAR_FIELD(fldname) \
+	jumble(jstate, &node->fldname, sizeof(node->fldname));
+
+#define JUMBLE_STRING_FIELD(fldname) \
+	if (node->fldname != NULL) \
+		jumble_string(jstate, node->fldname);
+
+#define JUMBLE_NODE_FIELD(fldname) \
+	if (node->fldname != NULL) \
+		_jumbleNode(jstate, (Node *) node->fldname);
+
+#define JUMBLE_BITMAPSET_FIELD(fldname) \
+	if (node->fldname != NULL) \
+		jumble_bitmapset(jstate, node->fldname);
+
+#define JUMBLE_LIST_FIELD(fldname) \
+	if (node->fldname != NULL) \
+		_jumbleList(jstate, node->fldname);
+
+/*
+ * In certain cases, we want to use a field's value for jumble purposes, but
+ * not contribute to the total length of the jumble string.  For example, we
+ * might track the existence of a field but not its actual value.
+ *
+ * To do this, we copy the current state of jstate, jumble the field, and then
+ * restore the state.  The jumble will include the hash contribution from the
+ * field, but the length will remain as it was before.
+ */
+#define JUMBLE_HASH_ONLY(field_code) \
+	{
+		uint32 save_len = jstate->string_length;
+		uint32 save_hash = jstate->hash;
+		uint32 save_seed = jstate->seed;
+		field_code;
+		jstate->string_length = save_len;
+		jstate->hash = save_hash;
+		jstate->seed = save_seed;
+	}
+
+/*
+ * For location fields, we want to track their presence (which can be an
+ * indicator of whether a construct is user-written or automatically generated)
+ * but not the exact value (which would make the query jumble depend on line
+ * and column numbers).
+ *
+ * We jumble a single fixed byte if the location is valid, and a different
+ * fixed byte if it's not, rather than the actual location value.
+ */
+#define JUMBLE_LOCATION_PRESENCE(fldname) \
+	{
+		char presence;
+		presence = (node->fldname != -1) ? 'L' : 'l';
+		jumble(jstate, &presence, 1);
+	}
+
+
+/*
+ * Iterate over all node types, and generate jumble functions for those that
+ * need them.
+ */
+foreach my $n (@node_types)
+{
+	next if elem $n, @abstract_types;  # 跳过抽象类型
+	next if elem $n, @nodetag_only;    # 跳过只需要标签的类型
+	my $struct_no_query_jumble = elem $n, @no_query_jumble;  # 结构体是否不需要query jumble支持
+
+	# 为queryjumblefuncs.switch.c生成case语句（除非不需要query jumble支持）
+	unless ($struct_no_query_jumble) {
+		print $qfs "\t\tcase T_${n}:\n"
+		  . "\t\t\t_jumble${n}(jstate, (const $n *) node);\n"
+		  . "\t\t\tbreak;\n";
+	}
+
+	next if elem $n, @custom_query_jumble;  # 如果有自定义实现，跳过
+	next if $struct_no_query_jumble;        # 如果不需要query jumble支持，跳过
+
+	# 为queryjumblefuncs.funcs.c生成函数定义
+	print $qff "
+static void
+_jumble${n}(JumbleState *jstate, const $n *node)
+{
+";
+
+	# 跟踪已处理的字段以支持字段顺序检查
+	my %previous_fields;
+
+	# 为每个字段打印指令
+	foreach my $f (@{ $node_type_info{$n}->{fields} })
+	{
+		my $t = $node_type_info{$n}->{field_types}{$f};  # 字段类型
+		my @a = @{ $node_type_info{$n}->{field_attrs}{$f} };  # 字段属性
+
+		# 检查是否应该忽略此字段
+		if (elem 'query_jumble_ignore', @a) {
+			next;
+		}
+
+		# 提取每个字段的属性
+		my $array_size_field;    # 数组大小字段
+		my $query_jumble_location = 0;  # 是否是位置字段
+		foreach my $a (@a)
+		{
+			if ($a =~ /^array_size\(([\w.]+)\)$/)  # 如果有数组大小字段
+			{
+				$array_size_field = $1;
+				# 坚持我们首先jumble数组大小！
+				if (!$previous_fields{$array_size_field}) {
+					die
+					  "array size field $array_size_field for field $n.$f must precede $f\n";
+				}
+			}
+			elsif ($a eq 'query_jumble_location')  # 如果是位置字段
+			{
+				$query_jumble_location = 1;
+			}
+		}
+
+		# 根据字段类型选择指令
+		if ($t eq 'ParseLoc')  # 解析位置类型
+		{
+			if ($query_jumble_location)  # 如果是位置字段
+			{
+				print $qff "\tJUMBLE_LOCATION_PRESENCE($f);\n";
+			}
+			else  # 普通位置字段
+			{
+				print $qff "\tJUMBLE_LOCATION_FIELD($f);\n";
+			}
+		}
+		elsif ($t eq 'char*')  # 字符串类型
+		{
+			print $qff "\tJUMBLE_STRING_FIELD($f);\n";
+		}
+		elsif ($t eq 'Bitmapset*' || $t eq 'Relids')  # 位图集类型
+		{
+			print $qff "\tJUMBLE_BITMAPSET_FIELD($f);\n";
+		}
+		elsif (elem $t, @scalar_types or elem $t, @enum_types)  # 标量类型或枚举类型
+		{
+			print $qff "\tJUMBLE_SCALAR_FIELD($f);\n";
+		}
+		elsif ($t eq 'function pointer')  # 函数指针类型
+		{
+			# 我们不jumble这些
+			next;
+		}
+		# 节点类型
+		elsif (($t =~ /^(\w+)\*$/ or $t =~ /^struct\s+(\w+)\*$/)
+			and elem $1, @node_types)
+		{
+			# 检查节点类型是否有必要的支持
+			if (elem $1, @no_query_jumble or elem $1, @nodetag_only)
+			{
+				die
+				  "node type \"$1\" lacks query jumble support, which is required for struct \"$n\" field \"$f\"\n";
+			}
+
+			print $qff "\tJUMBLE_NODE_FIELD($f);\n";
+		}
+		else  # 无法处理的类型
+		{
+			die
+			  "could not handle type \"$t\" in struct \"$n\" field \"$f\"\n";
+		}
+
+		$previous_fields{$f} = 1;  # 标记为已处理
+	}
+
+	# 结束_jumble函数
+	print $qff "}\n";
+}
+
+close $qff;  # 关闭文件
+close $qfs;  # 关闭文件
+
+
+## 重命名临时文件
+
+foreach my $f (@output_files)  # 遍历所有输出文件
+{
+	RenameTempFile("$output_path/$f$tmpext", "$output_path/$f");
+}
+
+
+## 清理
+
+# 在程序退出时删除临时文件（如果有的话）
+END
+{
+	foreach my $f (@output_files)  # 遍历所有输出文件
+	{
+		unlink "$output_path/$f$tmpext"  # 删除临时文件
+		  if -f "$output_path/$f$tmpext";
+	}
+}
