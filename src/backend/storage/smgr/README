@@ -50,3 +50,55 @@ to relfilelocator and block number, to identify which relation fork you want to
 access. Since most code wants to access the main fork, a shortcut version of
 ReadBuffer that accesses MAIN_FORKNUM is provided in the buffer manager for
 convenience.
+
+src/backend/storage/smgr/README
+
+存储管理器
+================
+
+在最初的伯克利Postgres系统中，有多个存储管理器，
+其中仅剩下“磁盘”管理器。 （在伯克利，有
+同时也是索尼WORM光盘点唱机和持久主主机的管理器
+但这些从未在任何外部发布的Postgres中得到支持，
+在任何版本的PostgreSQL中也没有。 “磁盘”管理器本身就是
+名字严重错误，因为它实际上支持任何类型的设备
+操作系统提供标准文件系统操作;即
+如今几乎涵盖了所有有趣的内容。 然而，我们保留了
+如果有人想重新引入存储管理器，我可以考虑更换存储管理器
+其他类型的存储管理器。 移除开关层可以节省
+反正也没什么特别的，因为存储访问操作肯定很远
+比多一层C函数调用更昂贵。
+
+在伯克利Postgres中，每个关系都被标记为存储的ID。
+经理用来做这件事。 这已经没了。 这可能更合理
+以便将存储管理器与表空间关联起来，以防我们以后重新引入
+多个存储管理器进入系统目录。
+
+该目录中的文件及其内容是
+
+smgr.c 存储管理器交换机调度代码。 节目中的套路
+		该文件调用相应的存储管理器来执行存储
+		访问由更高层代码请求。 SMGR.C还管理
+		文件处理缓存（SMgrRelation 表）。
+
+md.c “磁盘”存储管理器，实际上就是
+		与内核文件系统操作的接口。
+
+注意，md.c 又依赖于 src/backend/storage/file/fd.c。
+
+关系分支
+==============
+
+自8.4版本起，单个SMGR关系可以由多个物理关系组成
+文件，称为关系叉。这允许存储额外的元数据，如
+额外分支中的空闲空间信息，可以扩展和截断
+独立于主数据文件，同时仍将其视为一个整体
+系统目录中的物理关系。
+
+假设主叉，即分支编号0或MAIN_FORKNUM，始终如此
+存在。分支编号在 src/include/common/relpath.h 中分配。
+smgr.c 和 md.c 中的函数还额外需要一个分支编号参数
+对 relfilelocator 和块号，用来识别你想分叉的关系
+通行权。由于大多数代码想访问主分支，有一个快捷版本
+访问MAIN_FORKNUM的 ReadBuffer 在缓冲区管理器中提供了
+方便。

@@ -737,6 +737,30 @@ create_lateral_join_info(PlannerInfo *root)
  * sub-joinlists arise only from FULL OUTER JOIN or when collapsing of
  * subproblems is stopped by join_collapse_limit or from_collapse_limit.
  */
+
+/*****************************************************************************
+ *
+ * 加入树处理
+ *
+ *****************************************************************************/
+
+/*
+ * deconstruct_jointree
+ * 递归扫描查询的连接树，查找 WHERE 和 JOIN/ON qual
+ * 子句，并将其添加到相应的 restrictinfo 和 joininfo 中
+ * 属于基地RelOptInfos的列表。 另外，添加SpecialJoinInfo节点
+ * 对查询树中出现的任何外部连接进行根 >join_info_list。
+ * 返回一个“joinlist”数据结构，显示连接顺序的决策
+ * 需要由make_one_rel（）完成的。
+ *
+ * “joinlist”结果是包含 RangeTblRef 的项目列表
+ * Jointree 节点或子加入列表。 所有处于相同等级的物品
+ * joinlist 必须以 make_one_rel（） 确定的顺序加入
+ * （注意，法律订单可能受SpecialJoinInfo节点限制）。
+ * 子加入列表代表一个需要单独规划的子问题。现状
+ * 子加入列表仅在完全外联或崩溃时出现
+ * 子问题被join_collapse_limit或from_collapse_limit停止。
+ */
 List *
 deconstruct_jointree(PlannerInfo *root)
 {
@@ -750,6 +774,11 @@ deconstruct_jointree(PlannerInfo *root)
 	 * make_outerjoininfo requires all active placeholders to be present in
 	 * root->placeholder_list while we crawl up the join tree.
 	 */
+/*
+ * 此后不得再创建占位信息，因为
+ * make_outerjoininfo 要求所有活跃占位符必须在 中出现
+ * 根部的>placeholder_list，我们爬上连接树。
+ */
 	root->placeholdersFrozen = true;
 
 	/* Fetch the already-created top-level join domain for the query */
@@ -818,6 +847,21 @@ deconstruct_jointree(PlannerInfo *root)
  * (Hence, after each call, the last list item corresponds to its jtnode.)
  *
  * Return value is the appropriate joinlist for this jointree node.
+ */
+/*
+ * deconstruct_recurse
+ * deconstruct_jointree 初始 jointree 扫描的一个递归层级。
+ *
+ * jtnode 是要检查的 jointree 节点，parent_domain 是
+ * 包含加入域。 （我们必须加上所有出现的基础+OJ重叠
+ * 此处或下方链接parent_domain） parent_jtitem 是 JoinTreeItem
+ * 表示父 jointree 节点，或递归顶部的 NULL。
+ *
+ * item_list 是一个输入/输出参数：我们会在 上添加一个 JoinTreeItem 结构
+ * 每个 jointree 节点的列表，按深度优先遍历顺序排列。
+ * （因此，每次调用后，最后一个列表项对应其 jtnode。）
+ *
+ * 返回值是该 jointree 节点的适当 joinlist。
  */
 static List *
 deconstruct_recurse(PlannerInfo *root, Node *jtnode,

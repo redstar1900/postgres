@@ -2129,6 +2129,98 @@ check_generic_type_consistency(const Oid *actual_arg_types,
  * never occur for user-declared functions, because CREATE FUNCTION prevents
  * it.  But it does happen for some built-in functions, such as array_in().
  */
+/*
+ * enforce_generic_type_consistency（）
+ * 确保多态函数在法律上可调用，且
+ * 推导实际的论证和结果类型。
+ *
+ * 如果函数的参数中使用了任何多态伪类型，或者
+ * 返回类型，我们确保实际数据类型一致
+ * 彼此。 参数一致性规则如上所示
+ * check_generic_type_consistency（）。
+ *
+ * 如果任意多态性输入未知（即未类型文字）
+ * 论证，我们试图推断它应有的实际类型。 如果
+ * 成功时，我们改变declared_arg_types[]的位置，使得
+ * make_fn_arguments会强迫字面意义做出正确的事。
+ *
+ * 如果我们有ANY兼容族的多态参数，
+ * 我们同样会修改declared_arg_types[]条目以显示已解决的
+ * 常见超类型，因此make_fn_arguments会强制实际
+ * 论证于正确类型的论证。
+ *
+ * 规则被应用到函数的返回类型（可能对其进行更改）
+ * 如果被声明为多态型且至少存在一个
+ * 多态论元类型：
+ *
+ * 1） 如果返回类型是ANYELEMENT，且任意参数是ANYELEMENT，则使用
+ * 参数的实际类型作为函数的返回类型。
+ * 2） 如果返回类型是 ANYARRAY，且任意参数是 ANYARRAY，则使用
+ * 参数的实际类型作为函数的返回类型。
+ * 3） 类似地，如果返回类型为ANYRANGE或ANYMULTIRANGE，且任意
+ * 参数是 ANYRANGE 或 ANYMULTIRANGE，使用该参数的实际类型
+ * （或对应的范围或多范围类型）作为函数的返回
+ * 类型。
+ * 4） 否则，如果返回类型是 ANYELEMENT 或 ANYARRAY，且 有
+ * 至少一个 ANYELEMENT、ANYARRAY、ANYRANGE 或 ANYMULTIRANGE 输入，
+ * 从这些输入推导出返回类型，或者如果无法推导出错误。
+ * 5） 否则，如果返回类型为ANYRANGE或ANYMULTIRANGE，则抛出错误。
+ * （如果参数不支持，我们无法选择特定的范围类型
+ * 包括 ANYRANGE 或 ANYMULTIRANGE。）
+ * 6） ANYENUM 与 ANYELEMENT 视同，仅当
+ *（单独使用或与普通ANYELEMENT组合使用），我们会添加额外的
+ * 条件是 ANYELEMENT 类型必须是枚举。
+ * 7） ANYNONARRAY 与 ANYELEMENT 被处理相同，唯一不同的是，如果 使用 ANYNON 数组，
+ * 我们增加了一个额外条件，即 ANYELEMENT 类型不能是数组。
+ * （如果与 ANYARRAY 或 ANYENUM 组合使用，则为禁用操作，但
+ * 如果没有，则是额外的限制。）
+ * 8） 处理 ANYCOMPATIBLE、ANYCOMPATIBLEARRAY 和 ANYCOMPATIBLENONARRAY
+ * 通过解析这些参数（或其元素）的共同超类型
+ * 类型，用于数组输入），然后强制将所有这些参数强制执行为
+ * 公共超类型，或基于该公共超类型的数组类型
+ * 任何兼容阵列。
+ * 9） 对于 ANYCOMPATIBLERANGE 和 ANYCOMPATIBLEMULTIRANGE，必须有
+ * 至少一个非未知输入与这些参数匹配，且所有参数均为
+ * 输入必须是相同的范围类型（或其多范围类型，如
+ * 适当），因为我们无法从非范围类型推导出范围类型。
+ * 此外，选择范围类型的子类型时也包含在
+ * ANYCOMPATIBLE 等的通用超类型，且必须完全匹配
+ * 那个常见的超级类型。
+ *
+ * 数组或区间上的域与 ANYARRAY 或 ANYRANGE 参数匹配，
+ 分别是 和 ，立即被压扁为其基型。 （在
+ * 特殊，如果返回类型也是 ANYARRAY 或 ANYRANGE，我们将设
+ * 它归入基础类型，而非域类型。） 同样的情况也适用于
+ * 任意多域，任意兼容阵列，任意兼容范围，且
+ * 任何兼容多频段。
+ *
+ * 当allow_poly为假时，我们不期待任何actual_arg_types
+ * 是多态的，我们不应返回多态结果类型
+ * 也都不是。 当allow_poly为真时，拥有多态性“实际”是可以的
+ * arg 类型，我们可以返回匹配的多态类型作为结果。
+ * （此情况目前仅用于检查聚合的兼容性
+ * 带有底层transfn的声明。）
+ *
+ * 一个特殊情况是我们可以把ANYARRAY看作一个actual_arg_type
+ * 当 allow_poly 为假时（这仅因 pg_statistic 满足
+ * 列在目录中以任意数组显示）。 我们允许它匹配
+ * 声明了 ANYARRAY 参数，但仅当没有其他多态时
+ * 我们需要匹配的论元，无需确定
+ * 元素类型，推断结果类型。 注意，这意味着函数
+ * 如果用在pg_statistic上，选ANYARRAY最好表现得理智点
+ * 列;他们不能简单地假设连续的输入是相同的
+ * 实际元素类型。 ANYCOMPATIBLEARRAY没有类似的逻辑;
+ * 不需要，因为没有此类目录列，
+ * 这样我们就不会把它当作输入来看待。 我们可以考虑匹配一个真正的ANY数组
+ * 输入ANYCOMPATIBLEARRAY参数，但目前看来没什么用
+ * 也因为使用 ANYCOMPATIBLEARRAY 没有价值，除非有
+ * 至少还有一个其他ANYCOMPATIBLE-family的论点或结果。
+ *
+ * 此外，如果没有被声明为多态型的参数，
+ * 即使重印类型是多态的，我们也会不修改地返回。 这应该是
+ * 用户声明的函数绝不发生，因为 CREATE 函数阻止了
+ * 它。 但对于某些内置函数，如array_in（），确实会发生这种情况。
+ */
 Oid
 enforce_generic_type_consistency(const Oid *actual_arg_types,
 								 Oid *declared_arg_types,

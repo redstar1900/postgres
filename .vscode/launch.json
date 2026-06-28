@@ -1,0 +1,174 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "postgres initdb",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/buildDir/home/bin/initdb",
+            "args": [
+                "-D",
+                "${workspaceFolder}/buildDir/data",
+                "-d"
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "postgres --help",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/buildDir/home/bin/postgres",
+            "args": [
+                "--help"
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "createdb",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/buildDir/home/bin/createdb",
+            "args": [
+                "test"
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "launch postgres",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/buildDir/home/bin/postgres",
+            "args": [
+                "-D",
+                "${workspaceFolder}/buildDir/data",
+                "-d",
+                "5"
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "attach postgres",
+            "type": "cppdbg",
+            "request": "attach",
+            "program": "${workspaceFolder}/buildDir/home/bin/postgres",
+            "processId": "${command:pickProcess}",
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "postgres boot",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/buildDir/home/bin/postgres",
+            "args": [
+                "--boot",
+                "-F",
+                "-c",
+                "log_checkpoints=false",
+                "-X",
+                "16777216",
+                "-k",
+                "-d",
+                "5",
+                "-D",
+                "${workspaceFolder}/buildDir/data"
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        },
+        {
+            "name": "postgres single",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/buildDir/home/bin/postgres",
+            "args": [
+                "--single",
+                "-F",
+                "-O",
+                "-j",
+                "-c",
+                "search_path=pg_catalog",
+                "-c",
+                "exit_on_error=true",
+                "-c",
+                "log_checkpoints=false",
+                "template1",
+                "-D",
+                "${workspaceFolder}/buildDir/data"
+            
+            ],
+            "stopAtEntry": true,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

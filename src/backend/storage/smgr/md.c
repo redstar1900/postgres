@@ -78,6 +78,44 @@
  *
  * The entire MdfdVec array is palloc'd in the MdCxt memory context.
  */
+/*
+ * 磁盘存储管理器负责跟踪未打开的文件
+ * 描述子在其独立描述子池中。 这样做是为了制造
+ * 支持规模大于运营的关系更为容易
+ * 系统文件大小限制（通常为2GByte）。 为了实现这一点，
+ * 我们将关系拆分为“段”文件，每个文件都比
+ * 操作系统文件大小限制。 分段大小由RELSEG_SIZE决定
+ * 配置常数以pg_config.h为单位。
+ *
+ * 在圆盘上，关系必须由连续编号的段组成
+ * 模式中的文件
+ * —— 零个或多个恰好为RELSEG_SIZE块的完整段
+ * —— 恰好有一个部分段大小为0 <= 块数< RELSEG_SIZE
+ * ——可选地，任意数量大小为0的非活跃段。
+ * 完整和部分片段合称为“活跃”片段。
+ * 非活跃段是指曾经包含数据但目前已不存在的段
+ * 由于 mdtruncate（） 操作，不需要。 离开的原因
+ * 它们存在于零大小时，不是解除关联，而是
+ * 后端和/或检查点可能持有打开的文件引用
+ * 这样的片段。 如果关系在mdtruncate（）之后再次展开，则
+ * 当一个停用的片段重新激活时，这一点很重要
+ * 此类文件引用仍然有效---否则数据可能会被写入
+ * 导出一个未关联的旧段文件副本，该文件最终会
+ * 消失。
+ *
+ * 文件描述符存储在每个分支的md_seg_fds数组中
+ * SMgrRelation。这些数组的长度存储在md_num_open_segs中。
+ * 注意，分支md_num_open_segs具有特定值并不代表
+ * 必然意味着该关系没有额外的段;我们可能会
+ * 只是还没打开下一个片段。 （我们不可能拥有“全部”
+ * 段在数组中“作为不变量，因为另一个后端
+ * 可以在我们不注意时延长关系。） 我们没有
+ * 非活跃片段的条目;只要我们找到部分
+ * 段，我们假设后续段均为不活跃。
+ *
+ * 整个 MdfdVec 数组在 MdCxt 内存上下文中被调色。
+ */
+
 
 typedef struct _MdfdVec
 {
@@ -114,6 +152,13 @@ static MemoryContext MdCxt;		/* context for all MdfdVec objects */
  * mdnblocks() and related functionality henceforth - which currently is ok,
  * because this is only required in the checkpointer which never uses
  * mdnblocks().
+ */
+/*
+ * 允许开启段落前置于
+ * 有 RELSEG_SIZE，例如非活跃段（见上文）。注意这点有问题
+ * mdnblocks（） 及相关功能，目前是可以接受的，
+ * 因为这只在检查点中要求，而检查点从未使用
+ * mdnblocks（）。
  */
 #define EXTENSION_DONT_CHECK_SIZE	(1 << 4)
 /* don't try to open a segment, if not already open */
@@ -156,6 +201,9 @@ _mdfd_open_flags(void)
 /*
  * mdinit() -- Initialize private state for magnetic disk storage manager.
  */
+/*
+ * mdinit（） —— 初始化磁盘存储管理器的私有状态。
+ */
 void
 mdinit(void)
 {
@@ -169,6 +217,11 @@ mdinit(void)
  *
  * Note: this will return true for lingering files, with pending deletions
  */
+/*
+ * mdexists（） -- 物理文件存在吗？
+ *
+ * 注：对于未处理删除的文件，此方法将恢复为真
+ */
 bool
 mdexists(SMgrRelation reln, ForkNumber forknum)
 {
@@ -177,6 +230,11 @@ mdexists(SMgrRelation reln, ForkNumber forknum)
 	 * since we opened it.  As an optimization, we can skip that in recovery,
 	 * which already closes relations when dropping them.
 	 */
+/*
+ * 先关闭它，以确保我们能注意到叉是否被解绑
+ * 自从我们打开它以来。 作为优化，我们可以在恢复中跳过这个过程，
+ * 这在断开关系时已经关闭了。
+ */
 	if (!InRecovery)
 		mdclose(reln, forknum);
 
@@ -187,6 +245,11 @@ mdexists(SMgrRelation reln, ForkNumber forknum)
  * mdcreate() -- Create a new relation on magnetic disk.
  *
  * If isRedo is true, it's okay for the relation to exist already.
+ */
+/*
+ * mdcreate（） —— 在磁盘上创建一个新的关系。
+ *
+ * 如果isRedo为真，关系已经存在是可以的。
  */
 void
 mdcreate(SMgrRelation reln, ForkNumber forknum, bool isRedo)
@@ -209,6 +272,15 @@ mdcreate(SMgrRelation reln, ForkNumber forknum, bool isRedo)
 	 * should be here and not in commands/tablespace.c?  But that would imply
 	 * importing a lot of stuff that smgr.c oughtn't know, either.
 	 */
+/*
+ * 我们可能首次使用目标表空间
+ * 数据库，因此如果需要，可以创建一个每个数据库的子目录。
+ *
+ * XXX 这确实是模块分层的一个相当严重的违规，但这似乎
+ * 成为结账的最佳地点。 也许是TablespaceCreateDbspace
+ * 应该在这里，而不是在 commands/tablespace.c 里？ 但那意味着
+ * 导入了很多SMGR.C也不该知道的东西。
+ */
 	TablespaceCreateDbspace(reln->smgr_rlocator.locator.spcOid,
 							reln->smgr_rlocator.locator.dbOid,
 							isRedo);
@@ -304,6 +376,67 @@ mdcreate(SMgrRelation reln, ForkNumber forknum, bool isRedo)
  *
  * Note: any failure should be reported as WARNING not ERROR, because
  * we are usually not in a transaction anymore when this is called.
+ */
+/*
+ * mdunlink（） —— 取消关联链接。
+ *
+ * 注意，当调用时，我们已经收到了一个RelFileLocatorBackend ---，
+ * 将不再有SMgrRelation的哈希表条目。
+ *
+ * forknum 可以是用于删除特定分支的分支编号，或 InvalidForkNumber
+ * 删除所有分支。
+ *
+ * 对于正则关系，我们不解绑关系的第一段文件，
+ * 但只需截断为零长度，然后录制取消链接的请求
+ * 下一个检查点。 额外的段可以立即解除关联，
+ * 然而。 保持空文件的位置会阻止该 relfilenumber
+ * 避免被重复使用。 这保护我们免受的情景是：
+ * 1.我们删除一个关系（提交，实际上移除其文件）。
+ * 2.我们创建一个新关系，偶然地获得了相同的relfilenumber，与
+ * 刚删除的那个（必须是OID包围才会发生这种情况）。
+ * 3.我们在下一个检查点出现前坠毁了。
+ * 回放时，我们会删除文件再重新创建，这没问题
+ * 如果文件内容被后续的WAL条目重新填充。
+ * 但如果我们不进行 WAL 日志插入，而是依赖 fsync
+ * 文件在填充后（如我们在 wal_level=最小值时所做的那样），包含
+ * 文件将永远丢失。 通过将空文件留在
+ * 下一个检查点，我们阻止重新分配文件号，直到它
+ * 安全，因为relfilenumber赋值会跳过任何已有的文件。
+ *
+ * 如果有额外的段，会被截断然后取消链接。 原因
+ * 截断是指其他后端可能仍可为这些在
+ * SMGR 级别，这样内核还无法移除该文件。 我们想
+ * 尽管如此，还是要立刻收回磁盘空间。
+ *
+ * 不过我们不需要为了临时关系而经历这场舞蹈，因为
+ * 我们从不为临时关系做WAL条目，因此临时关系没有威胁
+ * 对已接管其 relfile number的常规 rel 的健康状态。
+ * 临时 rels 和普通 rels 文件命名不同
+ * 图案提供了额外的安全保障。 其他后端不应该是开放的
+ * 也给他们定期存款。
+ *
+ * 我们也不会在进行二进制升级时这样做。 没有重复使用
+ * 在这种情况下，因为在发生事故甚至简单的错误后，
+ * 升级失败，整个集群必须从头重建。
+ * 此外，必须立即从磁盘中删除文件，
+ * 因为我们可能要重复使用同一个文件号。
+ *
+ * 上述所有内容仅适用于关系的主叉;其他分支则可以
+ * 立即移除，因为他们不需要来防止
+ * 回收编号。 此外，我们也不会小心
+ * 跟踪是否创建了其他分支，但只需尝试
+ * 无条件解除关联;所以我们永远不应该抱怨ENOENT。
+ *
+ * 如果isRedo为真，关系已经消失也就不足为奇了。
+ * 另外，我们应该立即删除文件，而不是排队请求
+ * 以后用，因为重做时无法创建
+ * 矛盾关系。
+ *
+ * 注：我们目前根本不对ENOENT发出警告。 我们可以警告
+ * 主分支，非isRedo案例，但似乎不值得麻烦。
+ *
+ * 注意：任何失败都应报告为“警告”而非“错误”，因为
+ * 通常我们不再处于交易状态时，这个请求会被叫出。
  */
 void
 mdunlink(RelFileLocatorBackend rlocator, ForkNumber forknum, bool isRedo)
@@ -458,6 +591,15 @@ mdunlinkfork(RelFileLocatorBackend rlocator, ForkNumber forknum, bool isRedo)
  * EOF).  Note that we assume writing a block beyond current EOF
  * causes intervening file space to become filled with zeroes.
  */
+/*
+ * mdextend（） -- 向指定的关系添加一个块。
+ *
+ * 语义几乎与 mdwrite（）： write at the
+ * 指定位置。 然而，这适用于
+ * 扩展关系（即块数位于或超过当前电流）
+ * EOF）。 注意，我们假设写入一个超出当前EOF的块
+ * 导致中间的文件空间被填满了零。
+ */
 void
 mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		 const void *buffer, bool skipFsync)
@@ -481,6 +623,12 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	 * InvalidBlockNumber.  (Note that this failure should be unreachable
 	 * because of upstream checks in bufmgr.c.)
 	 */
+/*
+ * 如果关系扩展到2^32-1块，拒绝扩展任何
+ * 更重要---我们不能创建编号实际上为
+ * 无效块编号。 （注意，这个失败应该是不可达的
+ * 因为在bufmgr.c的上游检查。）
+ */
 	if (blocknum == InvalidBlockNumber)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
@@ -522,6 +670,12 @@ mdextend(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
  *
  * Similar to mdextend(), except the relation can be extended by multiple
  * blocks at once and the added blocks will be filled with zeroes.
+ */
+/*
+ * mdzeroextend（） -- 向指定的关系添加新的归零区块。
+ *
+ * 类似于 mdextend（），但该关系可以被扩展为多倍
+ * 块同时填入，新增的块将被填入零。
  */
 void
 mdzeroextend(SMgrRelation reln, ForkNumber forknum,
@@ -577,6 +731,17 @@ mdzeroextend(SMgrRelation reln, ForkNumber forknum,
 		 * that decision should be made though? For now just use a cutoff of
 		 * 8, anything between 4 and 8 worked OK in some local testing.
 		 */
+/*
+ * 如有且有用，请使用 posix_fallocate（）（通过）
+ * FileFallocate（）） 以扩展关系。这通常更多
+ * 比使用 write（） 更高效，因为通常不会导致内核
+ * 用于为扩展页面分配页面缓存空间。
+ *
+ * 不过，我们不使用 FileFallocate（） 来处理小型扩展，因为
+ * 在某些文件系统上击败延迟分配。具体位置不明
+ * 这个决定应该做吗？目前只需使用以下截断
+ * 8,4到8之间的任何在局部测试中都正常。
+ */
 		if (numblocks > 8)
 		{
 			int			ret;
@@ -604,6 +769,13 @@ mdzeroextend(SMgrRelation reln, ForkNumber forknum,
 			 * to avoid multiple writes or needing a zeroed buffer for the
 			 * whole length of the extension.
 			 */
+/*
+ * 即使我们不想用 Fallocate，我们仍然可以扩展
+ * 比单独写入每个8kB块更高效。
+ * pg_pwrite_zeros（）（通过FileZero（））使用pg_pwritev_with_retry（）
+ * 以避免多次写入或需要归零缓冲区
+ * 整个延伸线长度。
+ */
 			ret = FileZero(v->mdfd_vfd,
 						   seekpos, (off_t) BLCKSZ * numblocks,
 						   WAIT_EVENT_DATA_FILE_EXTEND);
@@ -634,6 +806,16 @@ mdzeroextend(SMgrRelation reln, ForkNumber forknum,
  * to "behavior".  We treat EXTENSION_CREATE the same as EXTENSION_FAIL;
  * EXTENSION_CREATE means it's OK to extend an existing relation, not to
  * invent one out of whole cloth.
+ */
+/*
+ * mdopenfork（） —— 开启指定关系的一个分支。
+ *
+ * 注意，当有多个段落时，我们只打开第一个片段。
+ *
+ * 如果第一个段不存在，则根据电子报告或返回NULL
+ * 对“行为”。 我们把EXTENSION_CREATE和EXTENSION_FAIL一样对待;
+ * EXTENSION_CREATE 表示可以扩展现有关系，而不是
+ * 凭空发明一个。
  */
 static MdfdVec *
 mdopenfork(SMgrRelation reln, ForkNumber forknum, int behavior)
@@ -711,6 +893,9 @@ mdclose(SMgrRelation reln, ForkNumber forknum)
 
 /*
  * mdprefetch() -- Initiate asynchronous read of the specified block of a relation
+ */
+/*
+ * mdprefetch（） —— 发起对关系中指定块的异步读取
  */
 bool
 mdprefetch(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum)
@@ -790,6 +975,14 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 		 * complaining.  This allows, for example, the case of trying to
 		 * update a block that was later truncated away.
 		 */
+/*
+ * 简短读数：我们已到达或已过EOF，或读到部分区块
+ * EOF。 通常这是错误;上层绝不应该尝试
+ * 读取一个不存在的块。 然而，如果zero_damaged_pages 开启 或
+ * 我们是InRecovery，我们应该返回零，但没有
+ * 抱怨。 这允许例如尝试
+ * 更新后来被截断的块。
+ */
 		if (zero_damaged_pages || InRecovery)
 			MemSet(buffer, 0, BLCKSZ);
 		else
@@ -801,6 +994,13 @@ mdread(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 	}
 }
 
+/*
+ * mdwrite() -- Write the supplied block at the appropriate location.
+ *
+ * This is to be used only for updating already-existing blocks of a
+ * relation (ie, those before the current EOF).  To extend a relation,
+ * use mdextend().
+ */
 /*
  * mdwrite() -- Write the supplied block at the appropriate location.
  *
@@ -875,6 +1075,12 @@ mdwrite(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
  * This accepts a range of blocks because flushing several pages at once is
  * considerably more efficient than doing so individually.
  */
+/*
+ * mdwriteback（） -- 告诉内核将页面写回存储。
+ *
+ * 此方法接受多个块，因为一次冲洗多个页面是
+ * 比单独操作效率高得多。
+ */
 void
 mdwriteback(SMgrRelation reln, ForkNumber forknum,
 			BlockNumber blocknum, BlockNumber nblocks)
@@ -885,6 +1091,10 @@ mdwriteback(SMgrRelation reln, ForkNumber forknum,
 	 * Issue flush requests in as few requests as possible; have to split at
 	 * segment boundaries though, since those are actually separate files.
 	 */
+/*
+ * 尽量少发冲洗请求;必须分开
+ * 段边界，因为那些实际上是独立文件。
+ */
 	while (nblocks > 0)
 	{
 		BlockNumber nflush = nblocks;
@@ -903,6 +1113,13 @@ mdwriteback(SMgrRelation reln, ForkNumber forknum,
 		 * avoid a race with PROCSIGNAL_BARRIER_SMGRRELEASE that might leave
 		 * us with a descriptor to a file that is about to be unlinked.
 		 */
+/*
+ * 我们可能正在清除已经断绝关系的缓冲，那是
+ * 好的，别理那个箱子。 如果段文件还没打开
+ * （即来自最近的 mdwrite（）），那么我们不想重新打开它，去
+ * 避免与可能离开的PROCSIGNAL_BARRIER_SMGRRELEASE比赛
+ * 我们，并用描述符指向即将被解除绑定的文件。
+ */
 		if (!v)
 			return;
 
@@ -934,6 +1151,14 @@ mdwriteback(SMgrRelation reln, ForkNumber forknum,
  * called, then only segments up to the last one actually touched
  * are present in the array.
  */
+/*
+ * mdnblocks（） -- 获取存储在关系中的块数。
+ *
+ * 重要副作用：关系中所有活跃片段均被打开
+ * 并加入md_seg_fds阵列。 如果这个习惯还没被
+ * 被叫喊，然后只有最后一个实际触碰的片段
+ * 出现在阵列中。
+ */
 BlockNumber
 mdnblocks(SMgrRelation reln, ForkNumber forknum)
 {
@@ -959,6 +1184,19 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 	 * that's OK because the checkpointer never needs to compute relation
 	 * size.)
 	 */
+/*
+ * 从最后开放的片段开始，以避免重复寻址。 我们有
+ * 先前已确认这些段长度正好RELSEG_SIZE，
+ * 而且每次都没必要再检查一次。
+ *
+ * 注意：只有当另一个后端
+ * 截断了关系。 我们依赖更高级别的代码来处理这些
+ * 场景通过关闭和重新打开MD FD，处理方式为
+ * Relcache 同花。 （因为检查点不参与
+ * relcache flush，它可以包含非活跃段的段项;
+ * 这没关系，因为检查点从不需要计算关系
+ * 尺寸。）
+ */
 	segno = reln->md_num_open_segs[forknum] - 1;
 	v = &reln->md_seg_fds[forknum][segno];
 
@@ -973,6 +1211,9 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 		/*
 		 * If segment is exactly RELSEG_SIZE, advance to next one.
 		 */
+/*
+ * 如果该片段正好RELSEG_SIZE，则进入下一个。
+ */
 		segno++;
 
 		/*
@@ -982,6 +1223,13 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 		 * undermines _mdfd_getseg's attempts to notice and report an error
 		 * upon access to a missing segment.
 		 */
+/*
+	 * 我们以前会O_CREAT过这里，但那有个缺点
+	 * 可能创建一个因某些操作而消失的段
+	 * 系统失误。 在这种情况下，创建
+	 * 破坏_mdfd_getseg试图发现和报告错误的努力
+	 * 在访问缺失片段时。
+	 */
 		v = _mdfd_openseg(reln, forknum, segno, 0);
 		if (v == NULL)
 			return segno * ((BlockNumber) RELSEG_SIZE);
@@ -997,6 +1245,16 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
  * functions for this relation or handled interrupts in between.  This makes
  * sure we have opened all active segments, so that truncate loop will get
  * them all!
+ */
+/*
+ * mdtruncate（） —— 截断与指定块数的关系。
+ *
+ * 保证不分配内存，因此可在关键区段使用。
+ * 来电者必须在持有 a 时呼叫 smgrnblocks（） 才能获得 curnblk
+ * 足够的锁以防止相对大小变化，且未使用任何SMGR
+ * 该关系的函数或中间处理的中断。 这让
+ * 当然我们已经打开了所有活跃段，所以截断环路会得到
+ * 他们全部！
  */
 void
 mdtruncate(SMgrRelation reln, ForkNumber forknum,
@@ -1095,6 +1353,17 @@ mdtruncate(SMgrRelation reln, ForkNumber forknum,
  * crash before the next checkpoint syncs the newly-inactive segment, that
  * segment may survive recovery, reintroducing unwanted data into the table.
  */
+/*
+ * mdimmedsync（） —— 立即同步与稳定存储的关系。
+ *
+ * 注意，只有已发布的写入才会同步;这个例行公事知道
+ * 不涉及缓冲区管理器中可能存在的脏缓冲区。 我们
+ * 同步活跃和非活跃段;smgrDoPendingSyncs（） 依赖于此。
+ * 考虑一个跳过 WAL 的关系。 假设一个检查点同步了 的块
+ * 某个段，然后 mdtruncate（） 使该段变得非活跃。 如果我们
+ * 在下一个检查点同步新停止的段之前崩溃，即
+ * 段可能通过恢复存活，重新引入不需要的数据到表中。
+ */
 void
 mdimmedsync(SMgrRelation reln, ForkNumber forknum)
 {
@@ -1105,6 +1374,10 @@ mdimmedsync(SMgrRelation reln, ForkNumber forknum)
 	 * NOTE: mdnblocks makes sure we have opened all active segments, so that
 	 * fsync loop will get them all!
 	 */
+/*
+ * 注：mdnblocks 确保我们已打开所有活跃段，因此
+ * fsync 循环能抓到他们所有人！
+ */
 	mdnblocks(reln, forknum);
 
 	min_inactive_seg = segno = reln->md_num_open_segs[forknum];
@@ -1115,6 +1388,12 @@ mdimmedsync(SMgrRelation reln, ForkNumber forknum)
 	 * is harmless.  We don't bother to clean them up and take a risk of
 	 * further trouble.  The next mdclose() will soon close them.
 	 */
+/*
+ * 暂时打开非活跃段，同步后关闭。 在那里
+ * 可能是 fsync（） 错误后未激活的部分被打开，但
+ * 是无害的。 我们不去清理它们，也不会冒风险
+ * 进一步麻烦。 下一个 mdclose（） 很快就会关闭它们。
+ */
 	while (_mdfd_openseg(reln, forknum, segno, 0) != NULL)
 		segno++;
 
@@ -1131,6 +1410,15 @@ mdimmedsync(SMgrRelation reln, ForkNumber forknum)
 		 * manager could also be tracked in such an IOContext, wait until
 		 * these are also tracked to track immediate fsyncs.
 		 */
+/*
+ * 通过mdimmedSync（）完成的fsync应单独跟踪
+ * IOContext 比通过 mdsyncfiletag（） 进行的 IOContext 进行区分
+ * 在不可避免的客户端后端同步之间（例如在期间完成的）
+ *索引构建）以及理想情况下由
+ * 检查点。由于其他IO操作绕过缓冲区
+ * 管理器也可以在这样的IOContext中被追踪，等一下
+ * 这些也被追踪以跟踪即时同步。
+ */
 		if (FileSync(v->mdfd_vfd, WAIT_EVENT_DATA_FILE_IMMEDIATE_SYNC) < 0)
 			ereport(data_sync_elevel(ERROR),
 					(errcode_for_file_access(),
@@ -1156,6 +1444,15 @@ mdimmedsync(SMgrRelation reln, ForkNumber forknum)
  * fsync request to the checkpointer process.  If that fails, just do the
  * fsync locally before returning (we hope this will not happen often
  * enough to be a performance problem).
+ */
+/*
+ * register_dirty_segment（） -- 标记关系段为需要fsync。
+ *
+ * 如果存在本地待处理操作表，只需在其中输入
+ * ProcessSyncRequests 待处理。 否则，试着把
+ * fsync 请求到检查点进程。 如果不行，就按
+ * 本地fsync后返回（我们希望这种情况不会经常发生
+ * 足以造成性能问题）。
  */
 static void
 register_dirty_segment(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
@@ -1193,6 +1490,17 @@ register_dirty_segment(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 		 * IOCONTEXT_NORMAL is likely clearer when investigating the number of
 		 * backend fsyncs.
 		 */
+/*
+ * 我们无法确定当前的IOContext是否是
+ * IOCONTEXT_NORMAL或IOCONTEXT_[批量阅读、批量写作、吸尘器]
+ * 点，所以把fsync算作IOCONTEXT_NORMAL
+ * IOContext。这大概没问题，因为后端数量
+ * fsyncs并没有说明
+ * 缓冲访问策略。而且把两个fsync都算进去了
+ * IOCONTEXT_NORMAL和IOCONTEXT_[Bulkread， Bulkwrite， vacuum] 在下面
+ * IOCONTEXT_NORMAL在研究 的数量时可能更为清晰
+ * 后端同步。
+ */
 		pgstat_count_io_op_time(IOOBJECT_RELATION, IOCONTEXT_NORMAL,
 								IOOP_FSYNC, io_start, 1);
 	}
@@ -1468,6 +1776,20 @@ _mdfd_getseg(SMgrRelation reln, ForkNumber forknum, BlockNumber blkno,
 			 * matters if in recovery, or if the caller is extending the
 			 * relation discontiguously, but that can happen in hash indexes.)
 			 */
+/*
+ * 通常只有在获得
+ * 呼叫者（即我们正在使用 mdextend（））。 但做WAL
+ * 恢复，无论如何都要创建分段;这允许以下情况
+ * 重放带有写入高编号 的 WAL 数据
+ * 一段后来被删除的关系片段。我们想去
+ * 前进并创建片段，这样我们才能完成回放。
+ *
+ * 我们必须保持在上一个之前分段的不变量
+ * 活动段大小为RELSEG_SIZE;因此，如果
+ * 延长，必要时用零填充。 （仅此而已
+ * 是否处于康复状态，或呼叫者是否在延长
+ * 关系是不连续的，但这在哈希索引中也可能发生。）
+ */
 			if (nblocks < ((BlockNumber) RELSEG_SIZE))
 			{
 				char	   *zerobuf = palloc_aligned(BLCKSZ, PG_IO_ALIGN_SIZE,
@@ -1489,6 +1811,12 @@ _mdfd_getseg(SMgrRelation reln, ForkNumber forknum, BlockNumber blkno,
 			 * exactly RELSEG_SIZE.  If not (this branch), either return NULL
 			 * or fail.
 			 */
+	/*
+ * 当不扩展（或明确包含截断）
+ * 段），只有当当前段为
+ * 完全RELSEG_SIZE。 如果不是（该分支），则返回 NULL
+ * 或失败。
+ */
 			if (behavior & EXTENSION_RETURN_NULL)
 			{
 				/*
@@ -1497,6 +1825,12 @@ _mdfd_getseg(SMgrRelation reln, ForkNumber forknum, BlockNumber blkno,
 				 * syscall involved in this case, explicitly set errno to
 				 * ENOENT, as that seems the closest interpretation.
 				 */
+/*
+ * 有些来电者会分辨_mdfd_getseg原因
+ * 根据错误返回NULL。因为没有失败
+ * 此案涉及系统调用，明确将 errno 设置为
+ * ENOENT，因为这似乎是最接近的解释。
+ */
 				errno = ENOENT;
 				return NULL;
 			}
@@ -1549,6 +1883,12 @@ _mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
  * buffer so the caller can use it in error messages.
  *
  * Return 0 on success, -1 on failure, with errno set.
+ */
+/*
+ * 将文件同步到磁盘，给定文件标签。 将路径写入输出
+ * 缓冲区，方便呼叫者在错误消息中使用。
+ *
+ * 成功时返回0，失败时返回-1，errno设置。
  */
 int
 mdsyncfiletag(const FileTag *ftag, char *path)
@@ -1603,6 +1943,12 @@ mdsyncfiletag(const FileTag *ftag, char *path)
  *
  * Return 0 on success, -1 on failure, with errno set.
  */
+/*
+ * 给定文件标签后，解除链接。 将路径写入输出
+ * 缓冲区，方便呼叫者在错误消息中使用。
+ *
+ * 成功时返回0，失败时返回-1，errno设置。
+ */
 int
 mdunlinkfiletag(const FileTag *ftag, char *path)
 {
@@ -1622,6 +1968,11 @@ mdunlinkfiletag(const FileTag *ftag, char *path)
  * a SYNC_FILTER_REQUEST request.  This will be called for all pending
  * requests to find out whether to forget them.
  */
+/*
+ * 处理时检查候选请求是否匹配给定标签
+ * 一个SYNC_FILTER_REQUEST请求。 所有待处理的都会被调用
+ * 请求是否忘记他们。
+ */
 bool
 mdfiletagmatches(const FileTag *ftag, const FileTag *candidate)
 {
@@ -1631,5 +1982,11 @@ mdfiletagmatches(const FileTag *ftag, const FileTag *candidate)
 	 * We'll return true for all candidates that have the same database OID as
 	 * the ftag from the SYNC_FILTER_REQUEST request, so they're forgotten.
 	 */
+/*
+ * 目前我们只用过滤请求来删除所有排程
+ * 与给定数据库相关的回调，当丢弃数据库时。
+ * 对于所有拥有相同数据库OID的候选人，我们会返回true。
+ * SYNC_FILTER_REQUEST请求中的FTAG，所以他们被遗忘了。
+ */
 	return ftag->rlocator.dbOid == candidate->rlocator.dbOid;
 }

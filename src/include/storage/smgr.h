@@ -2,6 +2,7 @@
  *
  * smgr.h
  *	  storage manager switch public interface declarations.
+ *	  SMGR.H 存储管理器交换机公共接口声明。
  *
  *
  * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
@@ -36,9 +37,20 @@
  * SMgrRelations that do not have an "owner" are considered to be transient,
  * and are deleted at end of transaction.
  */
+/*
+ *smgr.c 维护一个 SMgrRelation 对象表，这些对象本质上是缓存的文件句柄。
+ *SMgrRelation 由 smgropen（ 创建（如果不存在）创建，并由 smgrclose（） 销毁。
+ *注意，这些操作都不意味着 IO，它们只是创建或销毁一个哈希表条目。
+ *（但 smgrclose（） 可能会释放相关资源，如操作系统级文件描述符。）
+ *SMgr关系可能有一个“所有者”，即来自其他地方的指向它;如果SMgr关系关闭，smgr.c将清除该指针。
+ *我们用这个方法避免将指针从relcache悬挂到smgr，而无需让smgr明确知道relcache。
+ *每个SMgrRelation最多只能有一个“所有者”指针，但这正是我们所需要的。
+ *没有“所有者”的SMgr关系被视为暂时关系，交易结束时被删除。
+ */
 typedef struct SMgrRelationData
 {
 	/* rlocator is the hashtable lookup key, so it must be first! */
+	//rlocator 是哈希表查找键，所以它必须放在第一位！
 	RelFileLocatorBackend smgr_rlocator;	/* relation physical identifier */
 
 	/* pointer to owning pointer, or NULL if none */
@@ -49,6 +61,9 @@ typedef struct SMgrRelationData
 	 * event, and hold the last known size for each fork.  This information is
 	 * currently only reliable during recovery, since there is no cache
 	 * invalidation for fork extension.
+	 */
+	/*
+	 *以下字段在缓存刷新事件时重置为 InvalidBlockNumber，并保留每次分支的最后已知大小。目前这些信息仅在恢复时可靠，因为分支扩展没有缓存失效。
 	 */
 	BlockNumber smgr_targblock; /* current insertion target block */
 	BlockNumber smgr_cached_nblocks[MAX_FORKNUM + 1];	/* last known size */

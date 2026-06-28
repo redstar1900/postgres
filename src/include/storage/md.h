@@ -2,7 +2,7 @@
  *
  * md.h
  *	  magnetic disk storage manager public interface declarations.
- *
+ *    磁盘存储管理器的公共接口声明。
  *
  * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California

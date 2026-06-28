@@ -2,7 +2,7 @@
  *
  * fd.h
  *	  Virtual file descriptor definitions.
- *
+ *    虚拟文件描述符定义。
  *
  * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -40,6 +40,22 @@
  * or ReserveExternalFD to report any file descriptors that are held for any
  * length of time.  Failure to do so risks unnecessary EMFILE errors.
  */
+/*
+ *调用：文件 {关闭， 读取， 写， 大小， 同步}
+ *{路径名 Open， Allocate， Free} 文件
+ *这些不仅仅是 UNIX 例程的重命名。
+ *所有文件活动都用它们......
+ *文件fd;
+ *fd = PathNameOpenFile（“foo”，O_RDONLY）;
+ *AllocateFile（）;
+ *FreeFile（）;
+ *如果你需要 stdio 文件（FILE），请使用 AllocateFile，而非 fopen;
+ *然后用FreeFile（非Fclose）关闭它。避免用 stdio 来记录你打算长时间开启的文件，因为它们无法与其他文件共享内核文件描述符。
+ *
+ *同样，使用AllocateDirFreeDir（而非opendirclosedir）来分配开放目录（DIR），而OpenTransientFileCloseTransientFile用于无缓冲的文件描述符。
+ *
+ *如果你真的无法使用上述任何一项，至少调用AcquireExternalFD或ReserveExternalFD，报告任何被保留了一段时间的文件描述符。若未如此，可能导致不必要的EMFILE错误。
+ */
 #ifndef FD_H
 #define FD_H
 
@@ -69,6 +85,9 @@ extern PGDLLIMPORT int io_direct_flags;
 /*
  * This is private to fd.c, but exported for save/restore_backend_variables()
  */
+/*
+ *这是fd.c私有的，但导出为save/restore_backend_variables（）
+ */
 extern PGDLLIMPORT int max_safe_fds;
 
 /*
@@ -77,6 +96,10 @@ extern PGDLLIMPORT int max_safe_fds;
  * that's what you get.  Ugh.  This code is designed so that we don't
  * actually believe these cases are okay without further evidence (namely,
  * a pending fsync request getting canceled ... see ProcessSyncRequests).
+ */
+/*
+ *在Windows上，我们必须理解EACCES可能和ENOENT的含义相同，因为如果文件在该平台上是解绑但还没消失的，那就是你得到的。
+ *呃。这段代码的设计目的是让我们在没有进一步证据的情况下（比如一个待处理的fsync请求被取消......参见 ProcessSyncRequests 。
  */
 #ifndef WIN32
 #define FILE_POSSIBLY_DELETED(err)	((err) == ENOENT)
@@ -91,6 +114,14 @@ extern PGDLLIMPORT int max_safe_fds;
  * PG_O_DIRECT rather than defining O_DIRECT in that case (probably not a good
  * idea on a Unix).  We can only use it if the compiler will correctly align
  * PGIOAlignedBlock for us, though.
+ */
+/*
+ * O_DIRECT不是标准，但几乎所有Unix都有。 我们翻译它
+ * 映射到src/port/open.c中相应的Windows标志。 我们用 来模拟
+ * FCNTL（F_NOCACHE） 在 macOS 上的 FD.C Open（） 封装内。 我们用这个名字
+ * PG_O_DIRECT 而不是定义O_DIRECT（可能不好）
+ * Unix 上的创意）。 只有编译器能够正确对齐时，我们才能使用它
+ * 不过我们用的是PGIOAlignedBlock。
  */
 #if defined(O_DIRECT) && defined(pg_attribute_aligned)
 #define		PG_O_DIRECT O_DIRECT

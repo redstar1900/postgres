@@ -113,6 +113,45 @@ static Bitmapset *get_common_eclass_indexes(PlannerInfo *root, Relids relids1,
  * exploration, so we need not worry about whether we're in the right
  * memory context.
  */
+/*
+ * process_equivalence
+ * 给定子句具有可合并的运算符，且不是外联
+ * 限定，因此其两边可以视为平等
+ * 任何它们都可计算的任何地方;此外，平等可以是
+ * 传递性地延伸。 将这些知识记录在等价类中
+ * 数据结构（如适用）。 成功时返回真，未成功则返回假
+ *（此时调用者应将该子句视为普通子句，而非
+ * 等价）。
+ *
+ * 在某些情况下，尽管我们无法将子句转换为等价类
+ * 知识，我们仍然可以将其修改成比原版更有用的形式。
+ * 然后，*p_restrictinfo将被新的RestrictInfo取代，这就是
+ * 来电者应用于进一步处理。
+ *
+ * jdomain是该子句所在的连接域。
+ * 这限制了等价类推理的适用性，
+ * 如优化器/README中所述。
+ *
+ * 如果提出的等价子句包含漏函数，我们拒绝
+ * 并且security_level高于零。 EC评估规则要求我们
+ * 在某些连接层施加某些测试，我们无法容忍
+ * 推迟security_level理由的任何测试。 通过拒绝候选条款
+ * 可能需要安全延误，我们确保安全执行EC
+ * 条款一旦应被应用。
+ *
+ * 成功返回时，我们也初始化了该条款的 left_ec/right_ec
+ * 字段指向表示它的等价类。 这样可以省去查找
+ * 努力以后再说。
+ *
+ * 注：构造合并的等价类是标准的 UNION-FIND
+ * 问题，对于这些问题，存在比简单列表更好的数据结构。
+ * 如果这段代码成为瓶颈，可能会加快---
+ * 但目前，简单就是美。
+ *
+ * 注：此信息仅在规划启动时调用，GEQO期间不存在
+ * 探索，所以我们不必担心自己是否正确
+ * 记忆上下文。
+ */
 bool
 process_equivalence(PlannerInfo *root,
 					RestrictInfo **p_restrictinfo,

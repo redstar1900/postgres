@@ -211,6 +211,48 @@ typedef struct Expr
  * in the planner and doesn't correspond to any simple relation column may
  * have varnosyn = varattnosyn = 0.
  */
+/*
+ * Var - 表示变量（即表列）的表达式节点
+ *
+ * 在解析器和规划器中，varno 和 varattno 标识语义
+ * 指称，除非引用的是连接，否则是基关系列
+ * 使用与任一输入列语义上都不等价的列
+ * （因为它是完整连接，或者输入列需要类型强制）。
+ * 在这些情况下，varno 和 varattno 指的是 JOIN RTE。 （早期
+ * planner，我们将此类连接引用替换为隐含表达式;但要上去
+ * 在此之前，我们希望加入参考 Vars 以保持其原始身份
+ * 查询打印目的。）
+ *
+ * 在规划结束时，出现在上层规划节点中的Var节点是
+ * 重新分配以指向其子计划的输出;例如，在
+ * 连接节点 varno 变为 INNER_VAR 或 b OUTER_VAR，varattno 变为
+ * 该子计划目标列表中适当元素的索引。 同样，
+ * INDEX_VAR 用于标识指向索引列的 var
+ * 比堆柱还要多。 （在ForeignScan和CustomScan的图纸节点中，INDEX_VAR
+ * 被滥用来表示对自定义扫描元组类型的列的引用。）
+ *
+ * 在规划器中ROWID_VAR用于识别携带nonce变量
+ * 在更新/删除/合并过程中的行身份信息。 这个值应该
+ * 绝不出现在计划本之外。
+ *
+ * varnullingrels 是可以强迫的外部连接的 RT 指标集合
+ * Var 的值为 null（在查询中出现的那一刻）。
+ * 相关讨论请参见优化器/README。
+ *
+ * varlevelsup 在表示外部引用的 Vars 中大于零。
+ * 注意它影响所有 varno、varnullingrel 和 的意义
+ * varnosyn，所有这些都指该查询层级的范围表。
+ *
+ * 在解析器中，varnosyn 和 varattnosyn 要么相同于
+ * varno/varattno，或者它们在别名的JOIN中指定列的位置
+ * RTE 隐藏了语义指称 RTE 的 refname。 这是一种句法
+ * 标识符与语义标识符相对;它告诉 ruleutils.c
+ * 如何正确打印Var。 瓦尔诺辛/瓦拉特诺辛保留其价值
+ * 在规划和执行过程中，因此他们特别有帮助
+ * 调试时识别变量。 但请注意，生成的 Var
+ * 在规划表中 和 不对应任何简单关系列
+ * 有 varnosyn = varattnosyn = 0。
+ */
 #define    INNER_VAR		(-1)	/* reference to inner subplan */
 #define    OUTER_VAR		(-2)	/* reference to outer subplan */
 #define    INDEX_VAR		(-3)	/* reference to index column */

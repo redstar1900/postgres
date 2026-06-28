@@ -58,7 +58,36 @@ typedef uint16 BTCycleId;
  *	deleted pages to store a 32-bit safexid in the same field.  We now store
  *	64-bit/full safexid values using BTDeletedPageData instead.
  */
-
+/*
+ * BTPageOpaqueData ——每页末尾我们都会存储一个指针
+ * 献给树上的两位兄弟姐妹。 这用于前进/后退操作
+ * 索引扫描。 下一页链接对于恢复也至关重要
+ * 由于并发页面分割，搜索导航到错误页面
+ * 或删除;更多信息请参见src/backend/access/nbtree/README。
+ *
+ * 此外，我们存储页面的 btree 层级（从中数到现在
+ * 叶页为零），以及一些指示页面类型的标志位
+ * 以及状态。 如果页面被删除，会存储一个 BTDeletedPageData 结构体
+ * 在页面的元组区域，而标准的 BTPageOpaqueData 结构体则是
+ * 存储在页面特别区域。
+ *
+ * 我们还存储了“真空循环ID”。 当页面被拆分而VACUUM则是
+ * 处理索引，VACUUM 运行相关的非零值为
+ * 存储在分页的两半中。 （如果真空未运行，
+ * 两页均无 CycleID。）	这使得VACUM能够检测
+ * 自开始以来，已有一页被分割，且有小概率出现错误匹配
+ * 如果页面最后一次被拆分为MAX_BT_CYCLE_ID真空的正好倍数
+ * 很久以前。 此外，在分叉时，左侧的BTP_SPLIT_END旗会被清除
+ *（原始）页面，并且设置在正确的页面，但仅限于下一页
+ * 右侧的周期id不同。
+ *
+ * 注意：BTP_LEAF标志位是冗余的，因为可以测试电平==0
+ * 而不是。
+ *
+ * 注意：btpo_level字段曾为并集类型，以便允许
+ * 删除页面以在同一字段存储32位安全X。 我们现在存放
+ * 使用 BTDeletedPageData 的 64 位/完整 safexid 值。
+ */
 typedef struct BTPageOpaqueData
 {
 	BlockNumber btpo_prev;		/* left sibling, or P_NONE if leftmost */
@@ -145,6 +174,30 @@ typedef struct BTMetaPageData
  * metapage will be automatically upgraded to version 3 on the first
  * insert to it.  INCLUDE indexes cannot use version 2.
  */
+/*
+ * 当前的Btree版本是4。 这就是你创作时会得到的
+ * 一个新的索引。
+ *
+ * Btree 3 版本曾用于 PostgreSQL v11。 它大致上与
+ * 版本4，但堆TID不属于密钥空间。 索引元组
+ * 带有重复密钥的存储顺序可以任意。 我们继续
+ * 支持读取和写入 Btree 版本 2 和 3，使其不
+ * 需要立即重新索引于pg_upgrade。 为了获得
+ * 新的堆密钥空间语义，但需要重新索引。
+ *
+ * 当btm_allequalimage字段设置为 时，重复去重是安全的
+ * 确实如此。 3版的btm_allequalimage栏是安全的，但
+ * 只有版本4的索引使用去重功能。 甚至是第四版
+ * 在PostgreSQL v12上创建的索引需要重新索引才能使用
+ * 但需要去重，因为没有其他方法可以设置
+ * btm_allequalimage 真（pg_upgrade 没有被教过如何设置
+ * 元页面字段）。
+ *
+ * Btree版本2与版本3基本相同。 有两个新角色
+ * 元页面中的字段，这些字段是在版本3中引入的。 A 版本 2
+ * Metapage 将在第一版自动升级到 3 版
+ * 插入其中。 INCLUDE 索引不能使用 2 版。
+ */
 #define BTREE_METAPAGE	0		/* first page is meta */
 #define BTREE_MAGIC		0x053162	/* magic number in metapage */
 #define BTREE_VERSION	4		/* current version number */
@@ -160,6 +213,16 @@ typedef struct BTMetaPageData
  * There are rare cases where _bt_truncate() will need to enlarge
  * a heap index tuple to make space for a tiebreaker heap TID
  * attribute, which we account for here.
+ */
+/*
+ * btree 索引条目的最大大小，包括其元组头部。
+ *
+ * 我们实际上需要在每一页放三个物品，
+ * 因此，将任何一项限制在每页可用空间的三分之一。
+ *
+ * 在极少数情况下，_bt_truncate（）需要放大
+ * 堆索引元组用于腾出空间给平局决胜堆 TID
+ * 属性，我们在这里考虑了这一点。
  */
 #define BTMaxItemSize(page) \
 	(MAXALIGN_DOWN((PageGetPageSize(page) - \
@@ -182,6 +245,17 @@ typedef struct BTMetaPageData
  * special area).  The value is slightly higher (i.e. more conservative)
  * than necessary as a result, which is considered acceptable.
  */
+/*
+ * MaxTIDsPerBTreePage 是堆 TIDs 元组数量的上界
+ * 可能存储在树叶页上。 它用于为
+ * 每页临时缓冲区。
+ *
+ * 注：我们这里不考虑每元组的开销
+ * 简单事物（值基于单个数组的元素数量
+ * 堆 TID 必须填满页面头和
+ * 特殊区域）。 其数值略高（即更保守）
+ * 比必要的结果更重要，这被认为是可以接受的。
+ */
 #define MaxTIDsPerBTreePage \
 	(int) ((BLCKSZ - SizeOfPageHeaderData - sizeof(BTPageOpaqueData)) / \
 		   sizeof(ItemPointerData))
@@ -196,6 +270,16 @@ typedef struct BTMetaPageData
  * fillfactor is 96%, regardless of whether the page is a rightmost
  * page.
  */
+/*
+ * 叶页填充率默认为90%，但用户可调节。
+ * 对于叶子层以上的页面，我们使用固定的70%填充率。
+ * 填充因子在索引构建和拆分时应用
+ * 最右侧一页;在拆分非最右侧的页面时，我们会尝试
+ * 将数据平均分配。 当拆分一页时，完全是
+ * 填充单个值（重复），即有效叶页
+ * 填充率为96%，无论页面是否最右边
+ * 页面。
+ */
 #define BTREE_MIN_FILLFACTOR		10
 #define BTREE_DEFAULT_FILLFACTOR	90
 #define BTREE_NONLEAF_FILLFACTOR	70
@@ -208,12 +292,22 @@ typedef struct BTMetaPageData
  *	page numbers.  We can use zero for this because we never need to
  *	make a pointer to the metadata page.
  */
-
+/*
+ * 一般来说，btree代码试图对
+ * 页面布局，包含几个例行程序。 不过，我们需要一个特别的
+ * 值表示在我们预期的那些地方“无页码”
+ * 页码。 我们可以用零来实现这个，因为我们从来不需要
+ * 指向元数据页面。
+ */
 #define P_NONE			0
 
 /*
  * Macros to test whether a page is leftmost or rightmost on its tree level,
  * as well as other state info kept in the opaque data.
+ */
+/*
+ * 宏用于测试页面在树级上是最左还是最右，
+ * 以及其他保存在不透明数据中的州级信息。
  */
 #define P_LEFTMOST(opaque)		((opaque)->btpo_prev == P_NONE)
 #define P_RIGHTMOST(opaque)		((opaque)->btpo_next == P_NONE)
@@ -229,6 +323,9 @@ typedef struct BTMetaPageData
 
 /*
  * BTDeletedPageData is the page contents of a deleted page
+ */
+/*
+ * BTDeletedPageData 是已删除页面的页面内容
  */
 typedef struct BTDeletedPageData
 {
@@ -287,6 +384,17 @@ BTPageGetDeleteXid(Page page)
  * them here (caller is responsible for that case themselves).  Caller might
  * well need special handling for new pages anyway.
  */
+/*
+ * 现有页面可以回收吗？
+ *
+ * 此页面旨在集中制定已删除页面的安全政策
+ * 再利用。 然而，_bt_pendingfsm_finalize（）会重复部分相同的内容
+ * 逻辑，因为它不能直接和页面一起工作——保持两者同步。
+ *
+ * 注：PageIsNew（） 页面始终安全可回收，但我们无法处理
+ * 他们在这里（来电者对该案负责）。 来电者可能
+ * 反正新页面也需要特别处理。
+ */
 static inline bool
 BTPageIsRecyclable(Page page, Relation heaprel)
 {
@@ -311,6 +419,16 @@ BTPageIsRecyclable(Page page, Relation heaprel)
 		 * anyone. If not, then no scan that's still in progress could have
 		 * seen its downlink, and we can recycle it.
 		 */
+/*
+ * 页面被删除了，但是什么时候？如果只是被删除，就扫描一下
+ * 可能看过它的下游链接，稍后会阅读页面。
+ * 只要能做到这一点，我们就必须保留被删除的页面，因为
+ * 墓碑。
+ *
+ * 检查删除XID是否仍可见
+ * 任何人。如果没有，那正在进行的扫描就可能有问题
+ * 看到了它的下行链路，我们可以回收它。
+ */
 		return GlobalVisCheckRemovableFullXid(heaprel, safexid);
 	}
 
@@ -320,6 +438,10 @@ BTPageIsRecyclable(Page page, Relation heaprel)
 /*
  * BTVacState and BTPendingFSM are private nbtree.c state used during VACUUM.
  * They are exported for use by page deletion related code in nbtpage.c.
+ */
+/*
+ * BTVacState 和 BTPendingFSM 是 VACUUM 期间使用的私有 nbtree.c 状态。
+ * 它们被导出用于nbtpage.c中页面删除相关代码。
  */
 typedef struct BTPendingFSM
 {
@@ -363,7 +485,24 @@ typedef struct BTVacState
  *	start in item 2.  Rightmost pages have no high key, so we store data
  *	items beginning in item 1.
  */
-
+/*
+ * Lehman 和 Yao 的算法要求对每个非最右边的 Alpha 进行“高键”
+ * 页面。 高键不是用来访问堆的元组。 确实如此
+ * 一个枢轴元组（定义见下文“B树元组格式说明”）。
+ * 页面上的高键必须大于或等于任意
+ * 页面上出现的其他键。 如果我们发现自己在努力
+ * 插入一个严格>高调的调性，我们知道需要向右移动
+ *（这只应该发生在页面被拆分时，因为我们检查了
+ * 父页）。
+ *
+ * 我们的插入算法保证可以使用初始最小密钥
+ * 在我们右边的兄弟姐妹，作为高调。 一旦页面创建，它就很高
+ * 只有页面被拆分时键位才会变。
+ *
+ * 在非最右侧页面，高键位于第1项和数据项
+ * 从第二项开始。 最右侧的页面没有高键，所以我们存储数据
+ * 项目开始于第1项。
+ */
 #define P_HIKEY				((OffsetNumber) 1)
 #define P_FIRSTKEY			((OffsetNumber) 2)
 #define P_FIRSTDATAKEY(opaque)	(P_RIGHTMOST(opaque) ? P_HIKEY : P_FIRSTKEY)
@@ -455,6 +594,94 @@ typedef struct BTVacState
  * number of columns stored is always implicitly the total number in the
  * index (in practice there can never be non-key columns stored, since
  * deduplication is not supported with INCLUDE indexes).
+ */
+/*
+ * 关于B树元组格式及键和非键属性的说明：
+ *
+ * INCLUDE B树索引具有非键属性。 这些是额外的
+ * 可通过仅索引扫描返回但不影响的属性
+ * 索引中项的顺序（形式上，非键属性不为
+ * 被视为密钥空间的一部分）。 非关键属性仅为
+ * 存在于叶索引元组中，其项指针实际上指向堆
+ * 元组（非枢轴元组）。 _bt_check_natts（） 执行规则
+ * 此处描述。
+ *
+ * 非枢轴元组格式（纯/非后置变体）：
+ *
+ * t_tid |t_info |关键值 |如果有的话，包含列
+ *
+ * t_tid 指向堆 TID，即
+ * BTREE_VERSION 4。
+ *
+ * 非枢轴元组补集枢轴元组，而枢轴元组仅有键列。
+ * 枢轴元组的唯一目的是表示密钥空间的状态
+ * 分开了。 一般来说，任何具有多个层级的B树索引
+ *（即任何不仅由元页面和单一索引组成的索引
+ * 叶根页）必须有若干枢轴元组，因为枢轴
+ * 元组用于遍历树。 后缀截断可以省略
+ * 当形成新的枢轴时，尾随关键列，使得负值
+ * 它们的逻辑价值无限大。 由于BTREE_VERSION 4个索引处理堆
+ * TID 作为后置键列，确保所有索引元组
+ * 物理上唯一，需要将堆TID表示为后段
+ * 枢轴元组中的键列，尽管通常可以截断
+ * 离开，就像其他关键栏一样。（实际上，堆TID是
+ * 省略而非截断，因其表示方式不同于
+ * 非枢轴表示。）
+ *
+ * 枢轴元组格式：
+ *
+ * t_tid |t_info |关键值 |[回复]
+ *
+ * 我们通过滥用 来存储枢轴元组内存在的列数
+ * 它们的t_tid偏移场，因为枢轴元组从不需要存储实数
+ * 偏移（不过枢轴元组通常会在t_tid中存储下行链路）。 该
+ * 偏移字段仅存储当
+ * INDEX_ALT_TID_MASK位已设置，不包括后方堆
+ * TID 列有时以枢轴元组形式存储——表示为
+ * BT_PIVOT_HEAP_TID_ATTR的存在。 INDEX_ALT_TID_MASK咬了一口
+ * t_info总是设在BTREE_VERSION 4个枢轴元组上，因为
+ * BTreeTupleIsPivot（） 必须在堆域版本上可靠工作。
+ *
+ * 在版本 2 或 版本 3（！heapkeyspace）索引中，INDEX_ALT_TID_MASK
+ * 可能不存在枢轴元组中。 BTreeTupleIsPivot（） 无法使用
+ * 因此，可靠地存在。 存储的列数隐含为
+ * 与索引中的列数相同，就像任何非枢轴节点一样
+ * 元组。（存储的列数不应变化，因为后缀
+ * 在任何 ！heapkeyspace 索引中，截断键列都是不安全的。）
+ *
+ * t_tid 偏移数中的 12 个最低有效位用于
+ * 表示枢轴元组内的关键列数。 这样还剩4个
+ * 状态位（3 BT_STATUS_OFFSET_MASK位），所有元组共享
+ * INDEX_ALT_TID_MASK位设置（在t_info中设置）用于存储基本
+ * 元组元数据。 BTreeTupleIsPivot（） 和 BTreeTupleIsPosting（） 使用以下
+ * BT_STATUS_OFFSET_MASK块。
+ *
+ * 有时非枢轴元组也会使用重新利用的表示
+ * t_tid用于存储元数据，而非TID。 PostgreSQL v13 引入了
+ * 支持去重的新非枢轴元组格式：发布列表
+ * 元组。 去重合并是多个相等的非枢轴元组
+ * 变成逻辑等价、空间高效的表示。 一个派驻
+ * 列表是 ItemPointerData 元素的数组。 非枢轴元组为
+ * 在
+ * 否则我们得分开一页。
+ *
+ * 发布元组格式（替代非核心元组表示）：
+ *
+ * t_tid |t_info |关键值 |发布列表（TID数组）
+ *
+ * 发布列表元组通过具有
+ * INDEX_ALT_TID_MASK状态位在t_info中设置，BT_IS_POSTING状态
+ * 位设在t_tid的偏移数中。 这些标志重新定义了 的内容
+ * 发布元组的 t_tid 用于存储发布列表的位置
+ *（代替块编号），以及堆的总 TID 数量
+ * 出现在元组中（而非实际偏移数）。
+ *
+ * t_tid 偏移数中的 12 个最低有效位用于
+ * 表示元组中存在的堆 TID 数量，保持 4 状态
+ * 比特（BT_STATUS_OFFSET_MASK比特）。 像任何非枢轴元组一样，
+ * 存储的列数总是隐含的总数
+ * 索引（实际上永远不会存储非键列，因为
+ * INCLUDE 索引不支持重复去重）。
  */
 #define INDEX_ALT_TID_MASK			INDEX_AM_RESERVED_BIT
 
@@ -573,6 +800,16 @@ BTreeTupleSetDownLink(IndexTuple pivot, BlockNumber blkno)
  *
  * Note: This is defined as a macro rather than an inline function to
  * avoid including rel.h.
+ */
+/*
+ * 获取元组内的属性数量。
+ *
+ * 注意，这不包括隐含的平局决胜堆TID
+ * 属性，如果有的话。 还要注意，关键属性的数量必须为
+ * 在所有堆空间枢轴元组中显式表示。
+ *
+ * 注：这被定义为宏，而非 的内联函数
+ * 避免包含 Rel.H.
  */
 #define BTreeTupleGetNAtts(itup, rel)	\
 	( \

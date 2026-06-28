@@ -6,6 +6,12 @@
  * We don't support copying RelOptInfo, IndexOptInfo, or Path nodes.
  * There are some subsidiary structs that are useful to copy, though.
  *
+* * pathnodes.h
+ * 规划器内部数据结构的定义，尤其是路径。
+ *
+ * 我们不支持复制RelOptInfo、IndexOptInfo或路径节点。
+ * 不过，有一些辅助结构体是值得复制的。
+ *
  * Portions Copyright (c) 1996-2023, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -26,6 +32,10 @@
 /*
  * Relids
  *		Set of relation identifiers (indexes into the rangetable).
+ */
+/*
+ * 雷利兹
+ * 关系标识符集（指向距离表的索引）。
  */
 typedef Bitmapset *Relids;
 
