@@ -437,3 +437,333 @@ context.  fn_mcxt normally points at the context that was
 CurrentMemoryContext at the time the FmgrInfo structure was created;
 in any case it is required to be a context at least as long-lived as the
 FmgrInfo itself.
+
+src/backend/utils/fmgr/README
+
+函数管理器（Function Manager）
+================
+
+[本文件最初说明从 V0 到 V1 接口的过渡。现在它只解释 V1 接口的一些内部实现和设计理由，
+而 V0 接口已被移除。]
+
+V1 函数管理器接口
+---------------------------------
+
+设计的核心是用于表示函数查找结果，以及表示传递给某次具体函数调用的参数的数据结构。
+（我们希望将函数查找与函数调用分开，因为系统的许多部分会对同一函数反复应用；
+查找开销应在每条查询中只支付一次，而不是每个元组支付一次。）
+
+
+在 pg_proc 中查找函数时，结果表示为
+
+typedef struct
+{
+    PGFunction  fn_addr;    /* 待调用函数或 handler 的指针 */
+    Oid         fn_oid;     /* 函数的 OID（如有 handler 则不是 handler 的 OID） */
+    short       fn_nargs;   /* 输入参数个数（0..FUNC_MAX_ARGS） */
+    bool        fn_strict;  /* 函数为 "strict"（输入为 NULL 则输出为 NULL） */
+    bool        fn_retset;  /* 函数返回集合（需多次调用） */
+    unsigned char fn_stats; /* 若 track_functions 大于此值则收集统计信息 */
+    void       *fn_extra;   /* 供 handler 使用的额外空间 */
+    MemoryContext fn_mcxt;  /* 存储 fn_extra 的内存上下文 */
+    Node       *fn_expr;    /* 调用的表达式解析树，或 NULL */
+} FmgrInfo;
+
+对于普通内建函数，fn_addr 就是实现该函数的 C 例程的地址。否则它是包含目标函数
+的函数类的 handler 的地址。handler 可以使用函数 OID，或许还有 fn_extra 槽，
+来找到要执行的具体代码。（fn_oid = InvalidOid 可用于表示尚未初始化的 FmgrInfo 结构。
+FmgrInfo 首次由函数查找代码填充时 fn_extra 始终为 NULL，但函数 handler 可以设置它，
+以便在同一条查询中反复使用同一 FmgrInfo 时避免重复查找。）fn_nargs 是函数期望的
+参数个数，fn_strict 是其 strict 标志，fn_retset 表示是否返回集合；这些值均来自
+函数的 pg_proc 条目。fn_stats 也用于控制是否跟踪调用此函数的运行时统计信息。
+
+若函数作为 SQL 表达式的一部分被调用，fn_expr 将指向该函数调用的表达式解析树；
+这可用来提取关于实际参数的解析时信息。注意该字段实际上是关于参数的信息而非关于
+函数的信息，但实践证明将其放在 FmgrInfo 中比放在 FunctionCallInfoBaseData 中
+（从逻辑上更合理的位置）更方便。
+
+
+在调用函数时，会创建以下数据结构并传递给函数：
+
+typedef struct
+{
+    FmgrInfo   *flinfo;         /* 指向本次调用所用查找信息的指针 */
+    Node       *context;        /* 传递调用上下文相关信息 */
+    Node       *resultinfo;     /* 传递或返回关于结果的额外信息 */
+    Oid         fncollation;    /* 函数应使用的排序规则 */
+    bool        isnull;         /* 若结果为 NULL 则函数必须设为 true */
+    short       nargs;          /* 实际传递的参数个数 */
+    NullableDatum args[];       /* 传递给函数的参数 */
+} FunctionCallInfoBaseData;
+typedef FunctionCallInfoBaseData* FunctionCallInfo;
+
+flinfo 指向用于发起调用的查找信息。普通函数可能会忽略该字段，但函数类 handler
+需要它来获知被调用具体函数的 OID。
+
+对于“普通”函数调用，context 为 NULL，但在某些上下文中调用函数时可能指向
+额外信息。（例如，触发器管理器会在此传递当前触发器事件的信息。）
+更多细节见下文“函数调用上下文”。
+
+当从任何期望简单 Datum 结果的函数发起调用时，resultinfo 为 NULL。若函数返回
+的不止一个 Datum，它可能指向 Node 的某个子类型。（例如，在调用返回集合的
+函数时使用 resultinfo，见下文。）与 context 字段类似，resultinfo 是一个
+扩展钩子；fmgr 本身不限制该字段的用法。
+
+fncollation 是解析器推导出的输入排序规则，当没有可排序类型的输入或它们
+没有共同排序规则时为 InvalidOid。这实际上是一个隐藏的额外参数，对排序规则
+敏感的函数可以用它来决定行为。
+
+nargs 和 args[] 保存传递给函数的参数。注意现在传递给函数的所有参数（以及
+其结果值）将统一为 Datum 类型。如下文所述，调用方和被调用方应使用标准的
+Datum 与具体类型之间的转换宏，转换为某函数的实际参数类型。当 args[i].isnull
+为 true 时，args[i].value 的值未定义。
+
+通常由调用方负责确保传递的参数个数与被调用方期望的一致；除接受可变参数个数的
+被调用方外，被调用方通常会忽略 nargs 字段，直接从 args[] 取值。
+
+isnull 字段在调用前会被初始化为 "false"。函数返回后，isnull 是函数结果的
+空值标志：若为 true，则函数结果为 NULL，与实际返回值无关。注意简单的 "strict"
+函数可以忽略 isnull 和 args[i].isnull，因为当 args[].isnull 中有任何 TRUE
+值时它们根本不会被调用。
+
+FunctionCallInfo 取代了 FmgrValues 以及大量临时参数约定、全局变量
+（至少包括 fmgr_pl_finfo 和 CurrentTriggerData）和其他丑陋设计。
+
+
+被调用方，无论是单个函数还是函数 handler，都应始终具有如下签名：
+
+Datum function (FunctionCallInfo fcinfo);
+
+该签名由以下 typedef 表示：
+
+typedef Datum (*PGFunction) (FunctionCallInfo fcinfo);
+
+函数负责适当设置 fcinfo->isnull，并以 Datum 形式返回结果。注意由于现在
+所有被调用方都具有完全相同的签名，且通过声明为该签名的函数指针调用，
+我们不应有可移植性或优化方面的问题。
+
+
+函数编码约定
+---------------------------
+
+以下是建议的宏和编码约定：
+
+可经 fmgr 调用的函数定义应始终形如
+
+Datum
+function_name(PG_FUNCTION_ARGS)
+{
+	...
+}
+
+"PG_FUNCTION_ARGS" 仅展开为 "FunctionCallInfo fcinfo"。使用此宏的主要
+原因是便于脚本识别函数定义。然而，若我们将来再次决定改变调用约定，
+预先保留此宏可能会有用。
+
+非 strict 函数负责检查每个参数是否为空，可用 PG_ARGISNULL(n)（即
+"fcinfo->args[n].isnull"）来检查。它应避免尝试获取任何为空参数的值。
+
+strict 和非 strict 函数在需要时都可以用
+	PG_RETURN_NULL();
+返回 NULL，该宏展开为
+	{ fcinfo->isnull = true; return (Datum) 0; }
+
+参数值通常用如下代码获取：
+	int32	name = PG_GETARG_INT32(number);
+
+对于 float4、float8 和 int8，PG_GETARG 宏会隐藏类型是按值传递还是按引用传递。
+例如，若 float8 为按引用传递，则 PG_GETARG_FLOAT8 展开为
+	(* (float8 *) DatumGetPointer(fcinfo->args[number].value))
+通常这样调用：
+	float8  arg = PG_GETARG_FLOAT8(0);
+出于历史原因，与浮点相关的 typedef 和宏用字节数（4 或 8）表示类型宽度，
+而我们更倾向用位数标注整数类型的宽度。
+
+非空值用相应类型的 PG_RETURN_XXX 宏返回。例如，PG_RETURN_INT32 展开为
+	return Int32GetDatum(x)
+PG_RETURN_FLOAT4、PG_RETURN_FLOAT8 和 PG_RETURN_INT64 在需要时会 palloc，
+从而隐藏其数据类型是按值还是按引用传递。
+
+fmgr.h 将为所有基本数据类型提供 PG_GETARG 和 PG_RETURN 宏。定义专用 SQL
+数据类型（例如 timestamp）的模块或头文件应为这些类型定义合适的宏，
+以便操纵这些类型的函数能以标准风格编码。
+
+对于非原始数据类型（尤其是变长类型），隐藏按引用传递的特性并不很实用，
+因此这些类型的 PG_GETARG 和 PG_RETURN 宏不会比 DatumGetPointer/PointerGetDatum
+加上适当类型转换多做多少事（但见下文 TOAST 讨论）。返回此类类型的函数
+需要显式 palloc() 结果空间。我建议此类类型的 GETARG 和 RETURN 宏名以 "_P"
+结尾，作为提醒它们产生或接受指针。例如，PG_GETARG_TEXT_P 产生 "text *"。
+
+当函数需要访问 fcinfo->flinfo 或 FunctionCallInfo 的其他辅助字段时，
+应直接访问。我认为为这些情况提供语法糖宏用处不大。
+
+
+对可 TOAST 数据类型的支持
+---------------------------------
+
+对于可 TOAST 的数据类型，PG_GETARG 宏会提供已去 TOAST 的数据值。少数情况
+可能仍需要未去 TOAST 的值，但绝大多数情况需要去 TOAST 的结果，因此
+这将是默认行为。若要获取参数值而不触发去 TOAST，使用 PG_GETARG_RAW_VARLENA_P(n)。
+
+某些函数需要输入值的可修改副本。此时，若我们本已为去 TOAST 而复制了数据，
+再额外复制一步就多余了。因此，每种可 toast 的数据类型都有额外的获取宏，
+例如 PG_GETARG_TEXT_P_COPY(n)，它提供保证为新的副本，并在可能时与去 TOAST
+步骤合并。
+
+还有 PG_FREE_IF_COPY(ptr,n) 宏，当且仅当给定指针与第 n 个参数的原始值
+不同时才 pfree 该指针。若第 n 个参数的值确实被去 TOAST 了，可用它释放
+去 TOAST 后的值。目前，对大多数函数来说这样做并非必要，因为核心后端代码
+会定期释放临时空间，因此函数执行中的内存泄漏不是大问题。然而，自 7.1 起，
+被索引搜索调用的函数中的内存泄漏要到事务结束才会被清理。因此，列在
+pg_amop 或 pg_amproc 中的函数应注意不要泄漏去 TOAST 的副本，这些函数
+需要对可 toast 的输入使用 PG_FREE_IF_COPY()。
+
+函数绝不应尝试对其结果值重新 TOAST；它应只提供在当前内存上下文中 palloc
+的、未 toast 的结果。当且仅当该值实际存入元组时，元组 toaster 会决定
+是否需要 toast。
+
+
+函数调用上下文
+----------------------
+
+若调用方在 fcinfo->context 中传递非 NULL 指针，它应指向 Node 的某个子类型；
+具体上下文类型由节点类型字段指示。（被调用方应始终通过 IsA() 检查节点类型，
+再假定自己知道传递的是何种上下文。）fmgr 本身对该字段的用法没有其他限制。
+
+当前使用该约定的情况包括：
+
+* 触发器函数会收到 struct TriggerData 的实例，其中包含触发器上下文信息。
+（触发器函数不接收任何普通参数。）更多信息及触发器函数常用宏见 commands/trigger.h。
+
+* 聚合函数（更准确地说，是其 transition 和 final 函数）会收到 struct AggState
+的实例，即调用 Agg 计划节点的执行器状态节点；若作为窗口函数调用，则收到
+struct WindowAggState 的实例。建议仅通过 AggCheckCallContext() 及其相关
+函数使用这些指针，它们在 fmgr.h 中声明，但文档仅在其源码
+src/backend/executor/nodeAgg.c 中。通常，仅当 transition 和 final 函数
+希望基于“在聚合内使用而非作为独立 SQL 函数”这一认知来优化执行时，
+这些上下文节点才有意义。
+
+* 真正的窗口函数会收到 struct WindowObject 的实例。（与触发器函数类似，
+它们不接收任何普通参数。）更多信息见 windowapi.h。
+
+* 过程（procedure）会收到 struct CallContext 的实例，其中包含 CALL 语句
+上下文的信息，尤其是是否在“原子”执行上下文中。
+
+* 某些数据类型输入函数（以及将来可能的其他函数类）的调用方会传递
+ErrorSaveContext 的实例。这表示调用方希望处理“软”错误，而不抛出导致
+事务终止的异常：被调用方应将错误原因信息存入 ErrorSaveContext 结构并
+返回哑元结果值。更多细节见下文“处理软错误”。
+
+
+处理软错误
+--------------------
+
+Postgres 报告错误的标准机制（ereport() 或 elog()）用于各类错误条件。
+这意味着通过 ereport(ERROR) 抛出异常需要昂贵的事务或子事务中止与清理，
+因为异常捕获方不敢对出了什么问题做太多假设。有些情况下我们更希望用
+更轻量的机制来处理已知可安全恢复、无需完整事务清理的错误。可通过
+SQL 调用的函数可使用 ErrorSaveContext 上下文机制来满足这一需求。
+
+要报告“软”错误，SQL 可调用函数应调用
+	errsave(fcinfo->context, ...)
+而不再使用
+	ereport(ERROR, ...)
+若传入的 "context" 为 NULL 或不是 ErrorSaveContext 节点，则 errsave 的行为
+与 ereport(ERROR) 完全一致：通过 longjmp 抛出异常，控制流不会返回。若
+"context" 是 ErrorSaveContext 节点，则 errsave 附属报告调用中的错误信息
+会存入上下文节点，errsave 正常返回。函数随后应向调用方返回哑元值。（推荐
+使用 SQL NULL 作为哑元值；但任何值均可，因为一旦调用方看到 ErrorSaveContext
+节点中已报告错误，就应忽略函数的返回值。）
+
+若调用 errsave() 后除了返回别无他事，可少写一两行，写成
+	ereturn(fcinfo->context, dummy_value, ...)
+以执行 errsave() 然后 "return dummy_value"。
+
+“软”报告的错误必须是安全的，即我们毫无疑问能够继续正常处理事务。
+不应这样处理的错误条件包括内存不足、意外内部错误，或任何不易在事后
+清理的情况。此类情况仍应像过去一样用 ereport 抛出。
+
+以数据类型输入函数为例，典型的“软”错误条件包括输入语法错误和超出范围的值。
+输入函数通常用简单的 if 检测这些情况，并可将随后的 ereport 调用改为
+errsave 或 ereturn。由于这一限制，通常不必将 ErrorSaveContext 指针
+传递得很深，因为底层函数报告的错误通常可合理视为内部错误。（另一种区分方式是：
+输入函数应将所有无效输入条件软报告，而内部问题为硬错误。）
+
+由于不会发生事务清理，在 errsave() 返回后退出的函数须自行负责资源清理。
+不必过分担心 palloc 内存的小泄漏，因为调用方应在短生命周期的内存上下文中
+运行该函数。然而，锁、打开的文件或 buffer pin 等资源必须像非错误代码路径
+一样干净释放。
+
+使用 ErrorSaveContext 机制捕获错误的调用方约定，与该结构的声明一并讨论，
+见 nodes/miscnodes.h。
+
+
+接受或返回集合的函数
+-------------------------------------
+
+若函数在 pg_proc 中标记为返回集合，则调用时 fcinfo->resultinfo 指向
+ReturnSetInfo 类型的节点。希望返回集合的函数若 resultinfo 为 NULL 或
+不指向 ReturnSetInfo 节点，应报错“called in context that does not accept
+a set result”。
+
+目前函数返回集合结果有两种模式：逐值调用（value-per-call），或物化（materialize）。
+在逐值调用模式下，函数每次被调用返回一个值，最后在无更多值可返回时报告“完成”。
+在物化模式下，函数的输出集合实例化在 Tuplestore 对象中；所有值在一次调用中返回。
+将来可能增加其他模式。
+
+ReturnSetInfo 包含字段 "allowedModes"，由调用方设置为调用方可支持的模式
+位掩码的 OR。函数实际使用的模式在另一字段 "returnMode" 中返回。为向后兼容，
+returnMode 初始化为逐值调用，仅当函数要使用不同模式时才需修改。若函数无法使用
+调用方愿意支持的任一模式，应 ereport()。
+
+逐值调用模式工作方式如下：ReturnSetInfo 包含字段 "isDone"，应设为下列值之一：
+
+    ExprSingleResult             /* 表达式不返回集合 */
+    ExprMultipleResult           /* 此结果是集合的一个元素 */
+    ExprEndResult                /* 集合中已无更多元素 */
+
+（调用方会将其初始化为 ExprSingleResult。）若函数直接返回 Datum 而不修改
+ReturnSetInfo，则调用结束且已返回单元素集合。要返回集合，函数须对每个集合
+元素将 isDone 设为 ExprMultipleResult。返回所有元素后，下一次调用应将 isDone
+设为 ExprEndResult 并返回空结果。（注意可在第一次调用时就这样做以返回空集合。）
+
+逐值调用函数绝不可假定会被运行到完成；执行器可能直接停止调用它们，
+例如因为 LIMIT。因此，在最后一次调用中尝试做任何资源清理是不安全的。
+通常也不必清理内存。若必须清理其他类型资源（如文件描述符），
+可在 ReturnSetInfo 节点所指向的 ExprContext 中注册 shutdown 回调函数。
+（但注意文件描述符是有限资源，因此跨调用保持打开通常不明智；需要文件访问的
+SRF 更好用物化模式在单次调用中完成。）
+
+物化模式工作方式如下：函数创建持有（可能为空的）结果集的 Tuplestore 并返回它。
+没有多次调用。函数还必须返回表明元组结构的 TupleDesc。Tuplestore 和 TupleDesc
+应在上下文 econtext->ecxt_per_query_memory 中创建（注意这*不会*是调用函数时的
+上下文）。函数将 Tuplestore 和 TupleDesc 的指针存入 ReturnSetInfo，将 returnMode
+设为物化模式，并返回 null。不使用 isDone，应保持在 ExprSingleResult。
+
+若在 allowedModes 中设置了 SFRM_Materialize_Random，Tuplestore 必须以
+randomAccess = true 创建；否则可以（且最好）以 randomAccess = false 创建。可同时支持 ValuePerCall 和 Materialize 模式的调用方会根据偏好设置或不设置
+SFRM_Materialize_Preferred。
+
+若可用，期望的元组描述符通过 ReturnSetInfo 传递；在其他上下文中 expectedDesc
+字段为 NULL。函数不必关注 expectedDesc，但在特殊情况下可能有用。
+
+InitMaterializedSRF() 是辅助函数，可在单次调用中为函数的 ReturnSetInfo 完成设置，
+以物化模式的正确配置填充 Tuplestore 和 TupleDesc。（SRF：Set Returning Function 集合返回函数
+是具有特殊返回值的函数，它返回一个集合，而不是单个值。）
+不支持接受集合的函数；相反，会对输入集合的每个元素多次调用该函数。
+
+
+关于函数 Handler 的说明
+-----------------------------
+
+在此设计中，函数类的 handler 应会发现生活更轻松、更清晰。被调用函数的 OID
+可直接从传入参数获得；我们不再需要全局变量 fmgr_pl_finfo。此外，通过修改
+fcinfo->flinfo->fn_extra，handler 可缓存查找信息，避免在同一函数被多次调用时
+重复查找。（fn_extra 只能作为提示使用，因为调用方不必须复用 FmgrInfo 结构。
+但在性能关键路径上它们通常会这样做。）
+
+若 handler 想分配内存保存 fn_extra 数据，不应在 CurrentMemoryContext 中分配，
+因为当前上下文的生命周期可能远短于 FmgrInfo 所在上下文。应在上下文
+flinfo->fn_mcxt 或长生命周期的缓存上下文中分配。fn_mcxt 通常指向创建
+FmgrInfo 结构时 CurrentMemoryContext 所在的上下文；无论如何，它必须是
+至少与 FmgrInfo 本身一样长生命周期的上下文。

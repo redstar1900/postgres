@@ -146,6 +146,30 @@ typedef struct HeapTupleFreeze
  * recommended that vacuumlazy.c avoid early freezing when freezing does not
  * enable setting the target page all-frozen in the visibility map afterwards.
  */
+/*
+ * VACUUM 用于跟踪冻结所有合格元组细节的状态
+ * 在给定的堆页上。
+ *
+ * VACUUM 通过 heap_prepare_freeze_tuple 为每页准备冻结计划
+ * 调用（每个带有存储的元组都有自己的调用）。 这次页面层面的冻结
+ * 状态在每次通话中更新，最终决定 或
+ * 必须不冻结页面。
+ *
+ * 除了冻结是否会继续的基本问题外，
+ * 状态还跟踪整个表格中最早的现存XID/MXID，对于
+ * 后续推进 relfrozenxid/relminmxid 价值的目的pg_class
+ * 开。 每个heap_prepare_freeze_tuple调用都会推送NewRelfrozenXid和/或
+ * NewRelminMxid 按需返回，以避免不安全的最终 pg_class 值。 任何
+ * 以及所有在真空结束后剩余的解冻XID或MXID，_必须_
+ * 具有 > = pg_class 中的最终 relfrozenxid/relminmxid 值。 就是这样
+ * 包括从任意元组的 xmax 中仍作为 MultiXact 成员的 XID。
+ *
+ * 当“freeze_required”标志在检查完所有元组后未被设置时，
+ * 关于冷冻的最终决定由 vacuumlazy.c 做出。 它可能会决定触发
+ * 根据其认为合适的标准进行冻结。 不过，它确实是
+ * 建议 vacuumlazy.c 避免提前冻结，因为冷冻不会
+ * 之后在可见性地图中启用目标页面全部冻结。
+ */
 typedef struct HeapPageFreeze
 {
 	/* Is heap_prepare_freeze_tuple caller required to freeze page? */
@@ -175,6 +199,30 @@ typedef struct HeapPageFreeze
 	 * in cases where laziness allows VACUUM to avoid allocating a new Multi.
 	 * The "freeze the page" trackers enable this flexibility.
 	 */
+/*
+ * “冻结” NewRelfrozenXid/NewRelminMxid 追踪器。
+ *
+ * heap_freeze_execute_prepared冻结或冻结时使用的追踪器
+ * 页面完全没有冻结计划。 对于 vacuumlazy.c 总是有效的
+ * 按定义冻结任何页面。 这甚至包括那些
+ * 一开始就不需要考虑带存储的元组。 这样
+ * heap_prepare_freeze_tuple 的“totally_frozen”结果总是可以为
+ * 即使不需要执行冻结计划，也同样使用。
+ * “冻结页面”。 只有“冻结”路径需要考虑需求
+ * 在此方案下，将页面全部冻结在可见性地图中。
+ *
+ * 当我们冻结页面时，通常只冻结所有XID的<最古Xmin
+ * 留下不符合冻结资格的XIDs（如果有的话）。 于是
+ * 你可能会想，这些追踪器为什么有必要;为什么要这样
+ * 任何一个VACUUM冻结的页面都应该保留XIDs/MXIDs，且
+ * 把顶级NewRelfrozenXid/NewRelminMxid追踪器收回？
+ *
+ * 使用“冻结页面”的定义是有用的，但不固定
+ * 过度说明了MultiXacts的影响方式。 heap_prepare_freeze_tuple
+ * 通常更愿意积极移除多重，但也采用了懒惰处理
+ * 在懒惰导致VACUUM避免分配新Multi的情况下。
+ * “冻结页面”追踪器支持这种灵活性。
+ */
 	TransactionId FreezePageRelfrozenXid;
 	MultiXactId FreezePageRelminMxid;
 
@@ -186,6 +234,14 @@ typedef struct HeapPageFreeze
 	 * based on the same general idea (do less work for this page during the
 	 * ongoing VACUUM, at the cost of having to accept older final values).
 	 */
+/*
+ * “无冻结” NewRelfrozenXid/NewRelminMxid 追踪器。
+ *
+ * 这些追踪器的维护方式与使用时相同的方式
+ * 真空扫描未被清理锁定的页面。 这两条代码路径分别是
+ * 基于相同的总体理念（在
+ * 持续的真空，但代价是必须接受较早的最终数值）。
+ */
 	TransactionId NoFreezePageRelfrozenXid;
 	MultiXactId NoFreezePageRelminMxid;
 
