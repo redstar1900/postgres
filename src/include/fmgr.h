@@ -82,6 +82,22 @@ typedef struct FmgrInfo
  * that allocated FunctionCallInfoData itself, as it'd often silently break
  * old code due to no space for arguments being provided.
  */
+/*
+ * 这个结构体实际上传递给了FMGR调用函数的数据。
+ *
+ * 被调用函数预期设置 isnull，可能还设置 resultinfo 或
+ * 结果信息指向的字段。 它不应该改变其他任何情况
+ * 田野。 （特别地，在参数数组上涂写是个坏主意，
+ * 因为有些来电者假设他们可以用相同的论证回忆。）
+ *
+ * 注意需要提供足够的参数空间，可以通过使用
+ * 动态分配中的 SizeForFunctionCallInfo（） 或通过使用
+ * LOCAL_FCINFO（） 用于堆叠分配。
+ *
+ * 该结构体被命名为 *BaseData，而非 *Data，以破坏 v12 之前的代码
+ * 分配了 FunctionCallInfoData 本身，因为它经常无声地被破坏
+ * 由于没有参数空间，代码较旧。
+ */
 typedef struct FunctionCallInfoBaseData
 {
 	FmgrInfo   *flinfo;			/* ptr to lookup info used for this call */
