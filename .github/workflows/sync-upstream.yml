@@ -3,8 +3,8 @@ name: Sync PostgreSQL Upstream
 on:
   workflow_dispatch:
   schedule:
-    # Every day at 02:00 UTC.
-    - cron: "0 2 * * *"
+    # Every day at 02:00 China Standard Time (UTC+8).
+    - cron: "0 18 * * *"
 
 permissions:
   contents: write
@@ -22,7 +22,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Add upstream remote
-        run: git remote add upstream git@github.com:postgres/postgres.git
+        run: git remote add upstream https://github.com/postgres/postgres.git
 
       - name: Fetch upstream
         run: git fetch upstream --prune --tags --force
