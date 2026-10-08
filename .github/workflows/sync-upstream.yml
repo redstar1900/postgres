@@ -15,11 +15,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.UPSTREAM_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.UPSTREAM_SYNC_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+
       - name: Check out origin
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Add upstream remote
         run: git remote add upstream https://github.com/postgres/postgres.git
